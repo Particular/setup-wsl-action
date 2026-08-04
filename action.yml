@@ -1,0 +1,19 @@
+name: setup-wsl-action
+description: Provision WSL2 and Docker on a GitHub Actions Windows runner
+inputs:
+  distribution:
+    description: The WSL distribution to install.
+    required: false
+    default: Debian
+  memory:
+    description: The memory limit for the WSL2 VM (e.g. 4GB, 8GB).
+    required: false
+    default: 4GB
+outputs:
+  wsl-ip:
+    description: The WSL VM gateway IPv4 address, for use in connection strings. On Linux runners this is 127.0.0.1.
+  distribution:
+    description: The WSL distribution name that was provisioned. Empty on Linux runners.
+runs:
+  using: node24
+  main: dist/index.mjs

@@ -1,0 +1,59 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+jobs:
+  ci:
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: ubuntu-latest
+            name: Linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup WSL
+        uses: ./
+        id: wsl
+        with:
+          distribution: Debian
+          memory: 4GB
+      - name: Verify
+        shell: pwsh
+        run: |
+          Write-Host "wsl-ip = ${{ steps.wsl.outputs.wsl-ip }}"
+          Write-Host "distribution = ${{ steps.wsl.outputs.distribution }}"
+          Write-Host "WSL_IP env = $Env:WSL_IP"
+          Write-Host "WSL_DISTRIBUTION env = $Env:WSL_DISTRIBUTION"
+
+          if (-not $Env:WSL_IP) {
+            throw "WSL_IP environment variable not set"
+          }
+
+          if ($Env:RUNNER_OS -eq "Windows") {
+            $distro = $Env:WSL_DISTRIBUTION
+            Write-Host "Verifying Docker is running inside WSL ($distro)..."
+            $output = (wsl.exe --distribution $distro -- docker info --format '{{.ServerVersion}}') -replace "`0", ""
+            Write-Host "Docker server version: $output"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Docker is not running inside WSL"
+            }
+          }
+          else {
+            Write-Host "Linux runner — verifying Docker is available..."
+            docker info --format '{{.ServerVersion}}'
+            if ($LASTEXITCODE -ne 0) {
+              throw "Docker is not available on the runner"
+            }
+          }

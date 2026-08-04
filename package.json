@@ -1,0 +1,34 @@
+{
+  "name": "setup-wsl-action",
+  "version": "1.0.0",
+  "description": "Provision WSL2 and Docker on a GitHub Actions Windows runner.",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "dev": "npm-watch",
+    "prepare": "ncc build index.mjs -o dist --license licenses.txt"
+  },
+  "watch": {
+    "prepare": {
+      "patterns": [
+        "index.mjs"
+      ],
+      "ignore": "dist/*",
+      "runOnChangeOnly": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Particular/setup-wsl-action.git"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^3.0.0",
+    "@actions/exec": "^3.0.0",
+    "dotenv": "^17.0.0",
+    "npm-watch": "^0.13.0"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.44.1"
+  }
+}
