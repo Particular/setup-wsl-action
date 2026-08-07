@@ -39,7 +39,7 @@ async function computeCacheKey(distribution) {
 }
 
 async function run() {
-    const distribution = core.getInput('distribution') || 'Debian';
+    const distribution = core.getInput('distribution') || 'Ubuntu';
     const memory = core.getInput('memory') || '4GB';
     const enableCache = (core.getInput('enable-cache') || 'true').toLowerCase() !== 'false';
     const runnerOs = process.env.RUNNER_OS || '';

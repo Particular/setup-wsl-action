@@ -95420,7 +95420,7 @@ async function computeCacheKey(distribution) {
 }
 
 async function run() {
-    const distribution = getInput('distribution') || 'Debian';
+    const distribution = getInput('distribution') || 'Ubuntu';
     const memory = getInput('memory') || '4GB';
     const enableCache = (getInput('enable-cache') || 'true').toLowerCase() !== 'false';
     const runnerOs = process.env.RUNNER_OS || '';

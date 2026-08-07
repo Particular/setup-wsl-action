@@ -1,5 +1,5 @@
 param (
-    [string]$Distribution = "Debian",
+    [string]$Distribution = "Ubuntu",
     [string]$Memory = "4GB",
     [string]$ImportFromCache,
     [string]$ExportToCache
@@ -70,26 +70,16 @@ elseif ($runnerOs -eq "Windows") {
             }
         }
         else {
-            # Distribution installs can fail transiently (e.g. Wsl/InstallDistro/VerifyChecksum/
-            # TRUST_E_BAD_DIGEST when Microsoft's CDN and distro manifest are briefly out of
-            # sync, or network blips), so retry with backoff. Uses the service-managed install
-            # (no --web-download), matching the sibling setup-*-action repos; it can still fail
-            # transiently, which is exactly what the retry absorbs.
-            $maxAttempts = 3
-            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-                Write-Output "Installing $wslDistribution in WSL (attempt $attempt of $maxAttempts)"
-                wsl.exe --install $wslDistribution --no-launch
-                if ($LASTEXITCODE -eq 0) {
-                    break
-                }
-                if ($attempt -lt $maxAttempts) {
-                    $delay = $attempt * 15
-                    Write-Output "Install failed (exit $LASTEXITCODE). Retrying in $delay seconds..."
-                    Start-Sleep -Seconds $delay
-                }
-            }
+            # Distribution images are downloaded from each distro's own infrastructure
+            # (Ubuntu from releases.ubuntu.com, Debian from salsa.debian.org), which is outside
+            # our control. Uses the service-managed install (no --web-download). Debian's WSL
+            # artifact on salsa.debian.org is currently serving inconsistent bytes and fails
+            # Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST, so Ubuntu is the default.
+            # See https://github.com/microsoft/WSL/issues/41279
+            Write-Output "Installing $wslDistribution in WSL"
+            wsl.exe --install $wslDistribution --no-launch
             if ($LASTEXITCODE -ne 0) {
-                throw "Failed to install $wslDistribution in WSL after $maxAttempts attempts"
+                throw "Failed to install $wslDistribution in WSL"
             }
         }
     }

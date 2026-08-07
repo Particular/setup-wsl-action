@@ -2,9 +2,9 @@ name: setup-wsl-action
 description: Provision WSL2 and Docker on a GitHub Actions Windows runner
 inputs:
   distribution:
-    description: The WSL distribution to install. Only Debian and Ubuntu are currently supported.
+    description: The WSL distribution to install. Only Debian and Ubuntu are currently supported. Ubuntu is the default and recommended; Debian is currently affected by an upstream distribution issue (see README) and may be unreliable.
     required: false
-    default: Debian
+    default: Ubuntu
   memory:
     description: The memory limit for the WSL2 VM (e.g. 4GB, 8GB).
     required: false
