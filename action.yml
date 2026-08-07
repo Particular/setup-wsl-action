@@ -9,11 +9,17 @@ inputs:
     description: The memory limit for the WSL2 VM (e.g. 4GB, 8GB).
     required: false
     default: 4GB
+  enable-cache:
+    description: Whether to cache the provisioned WSL distribution across runs via @actions/cache. On hit, restores a wsl --export tar with wsl --import, skipping the distro download and Docker install. Defaults to true.
+    required: false
+    default: 'true'
 outputs:
   wsl-ip:
     description: The WSL VM gateway IPv4 address, for use in connection strings. On Linux runners this is 127.0.0.1.
   distribution:
     description: The WSL distribution name that was provisioned. Empty on Linux runners.
+  cache-hit:
+    description: "'true' if the WSL distribution was restored from cache, 'false' otherwise (including on Linux runners)."
 runs:
   using: node24
   main: dist/index.mjs

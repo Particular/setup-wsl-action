@@ -38,6 +38,7 @@ Service actions can read these env vars to run Docker commands through WSL and c
 |---|:-:|:-:|---|
 | `distribution` | No | `Debian` | The WSL distribution to install. Debian is recommended as the lightest officially-supported distribution. |
 | `memory` | No | `4GB` | The memory limit for the WSL2 VM. Increase for memory-intensive services. |
+| `enable-cache` | No | `true` | Whether to cache the provisioned WSL distribution across runs via `@actions/cache`. On hit, restores a `wsl --export` tar with `wsl --import`, skipping the distro download and Docker install. Defaults to `true`. |
 
 The following environment variables can also override the inputs, for consistency with existing Particular setup actions:
 
@@ -52,6 +53,7 @@ The following environment variables can also override the inputs, for consistenc
 |---|---|
 | `wsl-ip` | The WSL VM gateway IPv4 address. On Linux runners this is `127.0.0.1`. |
 | `distribution` | The WSL distribution name that was provisioned. Empty on Linux runners. |
+| `cache-hit` | `'true'` if the WSL distribution was restored from cache, `'false'` otherwise (including on Linux runners). |
 
 ## What it does (Windows)
 
@@ -64,6 +66,10 @@ The following environment variables can also override the inputs, for consistenc
 7. Detects the WSL VM gateway IPv4 address via `hostname -I`.
 8. Sets `WSL_DISTRIBUTION` and `WSL_IP` environment variables and action outputs.
 
+### Caching
+
+The action caches a `wsl --export` tar of the fully-provisioned distribution (Docker included) keyed on `setup-wsl-<distro>-wsl<wslVersion>-setup<sha256(setup.ps1)>`. On a cache hit it imports the tar with `wsl --import`, skipping the download and the Docker install. Subject to the 10 GB per-repository GitHub Actions cache limit (LRU + weekly eviction). Disable with `enable-cache: false`.
+
 ## What it does (Linux)
 
 Nothing. Docker is already available on the runner. Sets `WSL_IP=127.0.0.1` and `WSL_DISTRIBUTION` to empty, so consuming actions can use the same interface unconditionally.
@@ -73,7 +79,7 @@ Nothing. Docker is already available on the runner. Sets `WSL_IP=127.0.0.1` and 
 This action is designed for Particular's CI `setup-*-action` pattern. It is public, but external users should understand it is opinionated for this specific use case.
 
 - **GitHub Actions hosted Windows runners only.** Requires WSL2 with nested virtualization. Will not work on self-hosted runners without WSL2, macOS, or other CI systems.
-- **Installs Debian via `wsl --install --web-download`.** Downloads from Microsoft on every run. No caching of the distribution (yet).
+- **Installs Debian via `wsl --install --web-download`.** Downloads from Microsoft on the first run. The provisioned distribution is cached via `wsl --export`/`wsl --import` (keyed on the WSL version and a hash of `setup.ps1`), so subsequent runs skip the download and the Docker install.
 - **Installs Docker via Debian's `docker.io` apt package**, not Docker's official repositories. May lag behind official Docker releases.
 - **Writes `%USERPROFILE%\.wslconfig` if it doesn't exist.** Won't overwrite an existing file. This is a side effect on the runner.
 - **D-Bus keep-alive is a workaround** for WSL's idle shutdown behavior. It may break with future WSL versions.
