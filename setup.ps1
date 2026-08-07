@@ -30,9 +30,11 @@ if ($runnerOs -eq "Linux") {
     # Set env vars so consuming actions can use the same interface unconditionally.
     Export-Env -Name "WSL_DISTRIBUTION" -Value ""
     Export-Env -Name "WSL_IP" -Value "127.0.0.1"
+    Export-Env -Name "WSL_TOOLS_MODULE_PATH" -Value $modulePath
 
     Export-Output -Name "wsl-ip" -Value "127.0.0.1"
     Export-Output -Name "distribution" -Value ""
+    Export-Output -Name "wsl-tools-module-path" -Value $modulePath
 }
 elseif ($runnerOs -eq "Windows") {
     Write-Output "Windows runner — provisioning WSL2 with Docker"
@@ -144,9 +146,11 @@ elseif ($runnerOs -eq "Windows") {
     # 10. Export env vars and outputs for consuming actions.
     Export-Env -Name "WSL_DISTRIBUTION" -Value $wslDistribution
     Export-Env -Name "WSL_IP" -Value $wslIp
+    Export-Env -Name "WSL_TOOLS_MODULE_PATH" -Value $modulePath
 
     Export-Output -Name "wsl-ip" -Value $wslIp
     Export-Output -Name "distribution" -Value $wslDistribution
+    Export-Output -Name "wsl-tools-module-path" -Value $modulePath
 }
 else {
     throw "$runnerOs not supported"

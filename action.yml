@@ -18,6 +18,8 @@ outputs:
     description: The WSL VM gateway IPv4 address, for use in connection strings. On Linux runners this is 127.0.0.1.
   distribution:
     description: The WSL distribution name that was provisioned. Empty on Linux runners.
+  wsl-tools-module-path:
+    description: Filesystem path to the WslTools PowerShell module (Invoke-Wsl) shipped with this action, for consuming setup actions to Import-Module. Set on both Windows and Linux runners.
   cache-hit:
     description: "'true' if the WSL distribution was restored from cache, 'false' otherwise (including on Linux runners)."
 runs:

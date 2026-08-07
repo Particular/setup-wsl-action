@@ -50,19 +50,20 @@ jobs:
           Write-Host "distribution = ${{ steps.wsl.outputs.distribution }}"
           Write-Host "WSL_IP env = $Env:WSL_IP"
           Write-Host "WSL_DISTRIBUTION env = $Env:WSL_DISTRIBUTION"
+          Write-Host "WSL_TOOLS_MODULE_PATH env = $Env:WSL_TOOLS_MODULE_PATH"
 
           if (-not $Env:WSL_IP) {
             throw "WSL_IP environment variable not set"
           }
 
+          # Dogfood: import the module this action ships for consumers, on both OSes.
+          Import-Module $Env:WSL_TOOLS_MODULE_PATH
+
           if ($Env:RUNNER_OS -eq "Windows") {
-            $distro = $Env:WSL_DISTRIBUTION
-            Write-Host "Verifying Docker is running inside WSL ($distro)..."
-            $output = (wsl.exe --distribution $distro -- docker info --format '{{.ServerVersion}}') -replace "`0", ""
+            Write-Host "Verifying Docker is running inside WSL ($Env:WSL_DISTRIBUTION)..."
+            # Dogfood: omit -Distribution so it defaults to $WSL_DISTRIBUTION.
+            $output = (Invoke-Wsl -CheckExitCode -Command "docker info --format '{{.ServerVersion}}'") -replace "`0", ""
             Write-Host "Docker server version: $output"
-            if ($LASTEXITCODE -ne 0) {
-              throw "Docker is not running inside WSL"
-            }
           }
           else {
             Write-Host "Linux runner — verifying Docker is available..."
