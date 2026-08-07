@@ -13,13 +13,23 @@ jobs:
   ci:
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.allow_failure }}
-    name: ${{ matrix.name }}${{ matrix.name == 'Windows' && format('-WSL_Distro:{0}', matrix.wsl_distribution) || '' }}
+    name: ${{ matrix.name }}${{ matrix.name == 'Windows' && format('-WSL_Distro:{0}-{1}', matrix.wsl_distribution, matrix.cache_label) || '' }}
     strategy:
       matrix:
         include:
           - os: windows-latest
             name: Windows
             wsl_distribution: Ubuntu
+            cache: true
+            cache_label: cached
+            allow_failure: false
+          # Non-cached variant: exercises the fresh-install path (distro download +
+          # Docker install) that the cached job skips.
+          - os: windows-latest
+            name: Windows
+            wsl_distribution: Ubuntu
+            cache: false
+            cache_label: nocache
             allow_failure: false
           # Debian's WSL image on salsa.debian.org is currently serving inconsistent bytes
           # upstream (Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST). Kept as a
@@ -28,10 +38,14 @@ jobs:
           - os: windows-latest
             name: Windows
             wsl_distribution: Debian
+            cache: true
+            cache_label: cached
             allow_failure: true
           - os: ubuntu-latest
             name: Linux
             wsl_distribution: Debian
+            cache: true
+            cache_label: ''
             allow_failure: false
       fail-fast: false
     steps:
@@ -43,6 +57,7 @@ jobs:
         with:
           distribution: ${{ matrix.wsl_distribution }}
           memory: 4GB
+          enable-cache: ${{ matrix.cache }}
       - name: Verify
         shell: pwsh
         run: |
