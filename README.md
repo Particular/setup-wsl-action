@@ -31,7 +31,7 @@ The action sets three environment variables for subsequent steps:
 | `WSL_IP` | The WSL VM gateway IPv4 address | `127.0.0.1` |
 | `WSL_TOOLS_MODULE_PATH` | Path to the shipped `WslTools` module (`Invoke-Wsl`) | Same path (importable; `Invoke-Wsl` is Windows-only) |
 
-Service actions can read these env vars to run Docker commands through WSL and construct connection strings with the correct host, without doing their own WSL provisioning. `WSL_TOOLS_MODULE_PATH` lets a consuming action `Import-Module` the shipped `Invoke-Wsl` helper instead of copying it into its own repo. If the env vars are not set (e.g. the action wasn't called), service actions can fall back to provisioning WSL themselves — this is backwards-compatible with existing actions.
+Service actions can read these env vars to run Docker commands through WSL and construct connection strings with the correct host, without doing their own WSL provisioning. `WSL_TOOLS_MODULE_PATH` lets a consuming action `Import-Module` the shipped `Invoke-Wsl` helper instead of copying it into its own repo. If the env vars are not set (e.g. the action wasn't called), service actions can fall back to provisioning WSL themselves. That keeps existing actions backwards-compatible.
 
 ## Inputs
 
@@ -59,7 +59,7 @@ The following environment variables can also override the inputs, for consistenc
 
 ## Exported module (`Invoke-Wsl`)
 
-This action ships a small PowerShell module, `WslTools`, exposing `Invoke-Wsl` — the same helper the action uses internally. Its path is exported as `WSL_TOOLS_MODULE_PATH` (env) / `wsl-tools-module-path` (output) so consuming `setup-*-action`s can reuse it instead of copying a `.psm1` into every repo:
+This action ships a small PowerShell module, `WslTools`, exposing `Invoke-Wsl`, the same helper the action uses internally. Its path is exported as `WSL_TOOLS_MODULE_PATH` (env) / `wsl-tools-module-path` (output) so consuming `setup-*-action`s can reuse it without copying a `.psm1` into every repo:
 
 ```powershell
 Import-Module $Env:WSL_TOOLS_MODULE_PATH
@@ -74,13 +74,13 @@ Invoke-Wsl -CheckExitCode -Command "docker run --name myservice --detach --publi
 | `-Distribution` | No | Defaults to `$WSL_DISTRIBUTION` (set by this action), so it can usually be omitted. |
 | `-CheckExitCode` | No | Throw on a non-zero exit code. |
 
-`Invoke-Wsl` wraps `wsl.exe`, so it is Windows-only. On Linux runners, Docker is native and consuming actions run it directly — the module path is still exported so the `Import-Module` line is identical on both OSes.
+`Invoke-Wsl` wraps `wsl.exe`, so it is Windows-only. On Linux runners, Docker is native and consuming actions run it directly. The module path is still exported so the `Import-Module` line is identical on both OSes.
 
-The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D:\a\foo\bar.sh`) into the equivalent path inside the WSL distribution (e.g. `/mnt/d/a/foo/bar.sh`) — useful when a consuming action needs to pass a host-side file (such as an init script) into WSL. It is also Windows-only.
+The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D:\a\foo\bar.sh`) into the equivalent path inside the WSL distribution (e.g. `/mnt/d/a/foo/bar.sh`). This is useful when a consuming action needs to pass a host-side file, such as an init script, into WSL. It is also Windows-only.
 
 ## What it does (Windows)
 
-1. Writes `%USERPROFILE%\.wslconfig` with `[wsl2]` + `memory=<N>GB` + `vmIdleTimeout=-1` — constrains the VM and prevents idle shutdown. Only writes if the file doesn't exist (local dev configs are preserved).
+1. Writes `%USERPROFILE%\.wslconfig` with `[wsl2]` + `memory=<N>GB` + `vmIdleTimeout=-1`. This constrains the VM and prevents idle shutdown. Only writes if the file doesn't exist (local dev configs are preserved).
 2. Enables WSL2 (`wsl --set-default-version 2`).
 3. Installs the distribution if not already registered (`wsl --install Ubuntu --no-launch`).
 4. Installs Docker inside the distribution (`apt-get install docker.io`).
@@ -91,7 +91,7 @@ The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D
 
 ### Caching
 
-The action caches a `wsl --export` tar of the fully-provisioned distribution (Docker included) keyed on `setup-wsl-<distro>-distro<distroImageSha256[:16]>-setup<sha256(setup.ps1)[:16]>`. The distro image hash is read from Microsoft's [`DistributionInfo.json`](https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json) — the same manifest `wsl --install` resolves against — so the cache **refreshes automatically when a new distro image is published**, keeping the base image current for security updates. On a cache hit it imports the tar with `wsl --import`, skipping the download and the Docker install. Subject to the 10 GB per-repository GitHub Actions cache limit (LRU + weekly eviction). Disable with `enable-cache: false`.
+The action caches a `wsl --export` tar of the fully-provisioned distribution (Docker included) keyed on `setup-wsl-<distro>-distro<distroImageSha256[:16]>-setup<sha256(setup.ps1)[:16]>`. The distro image hash comes from Microsoft's [`DistributionInfo.json`](https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json), the same manifest `wsl --install` resolves against, so the cache refreshes automatically when a new distro image is published. This keeps the base image current for security updates. On a cache hit it imports the tar with `wsl --import`, skipping the download and the Docker install. The cache is subject to the 10 GB per-repository GitHub Actions limit (LRU + weekly eviction). Disable with `enable-cache: false`.
 
 ## What it does (Linux)
 
@@ -119,7 +119,7 @@ npm install
 npm run prepare
 ```
 
-The `prepare` script runs `@vercel/ncc` to bundle `index.mjs` and its dependencies into `dist/index.mjs`. The committed `dist/` is what the runner executes — the source `index.mjs` is not used directly.
+The `prepare` script runs `@vercel/ncc` to bundle `index.mjs` and its dependencies into `dist/index.mjs`. The committed `dist/` is what the runner executes. The source `index.mjs` is not used directly.
 
 To test `setup.ps1` directly:
 
