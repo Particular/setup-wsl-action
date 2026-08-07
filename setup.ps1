@@ -95,8 +95,9 @@ elseif ($runnerOs -eq "Windows") {
 
     # 5. Ensure Docker Compose (v2 plugin) is installed inside the WSL distribution.
     #    The docker.io package ships the engine and CLI but not the compose plugin.
+    #    The plugin package is named docker-compose-v2 on Ubuntu and docker-compose on Debian.
     Write-Output "Ensuring Docker Compose is installed inside $wslDistribution"
-    Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "command -v docker-compose >/dev/null 2>&1 || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --yes docker-compose-v2; }"
+    Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "docker compose version >/dev/null 2>&1 || { apt-get update && (DEBIAN_FRONTEND=noninteractive apt-get install --yes docker-compose-v2 || DEBIAN_FRONTEND=noninteractive apt-get install --yes docker-compose); }"
 
     # 6. Start the Docker daemon (systemd if available, otherwise SysV).
     Write-Output "Starting Docker daemon inside $wslDistribution"
