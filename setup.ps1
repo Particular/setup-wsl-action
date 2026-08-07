@@ -1,6 +1,8 @@
 param (
-    [string]$Distribution = "Debian",
-    [string]$Memory = "4GB"
+    [string]$Distribution = "Ubuntu",
+    [string]$Memory = "4GB",
+    [string]$ImportFromCache,
+    [string]$ExportToCache
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,10 +60,27 @@ elseif ($runnerOs -eq "Windows") {
         Where-Object { $_ -ne "" }
 
     if ($installedDistributions -notcontains $wslDistribution) {
-        Write-Output "Installing $wslDistribution in WSL"
-        wsl.exe --install $wslDistribution --web-download --no-launch
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install $wslDistribution in WSL"
+        if ($ImportFromCache -and (Test-Path $ImportFromCache)) {
+            Write-Output "Importing $wslDistribution from cache ($ImportFromCache)"
+            $importLocation = Join-Path $env:RUNNER_TEMP "setup-wsl-vhd-$wslDistribution"
+            New-Item -ItemType Directory -Force -Path $importLocation | Out-Null
+            wsl.exe --import $wslDistribution $importLocation $ImportFromCache --version 2
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to import $wslDistribution from cache"
+            }
+        }
+        else {
+            # Distribution images are downloaded from each distro's own infrastructure
+            # (Ubuntu from releases.ubuntu.com, Debian from salsa.debian.org), which is outside
+            # our control. Uses the service-managed install (no --web-download). Debian's WSL
+            # artifact on salsa.debian.org is currently serving inconsistent bytes and fails
+            # Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST, so Ubuntu is the default.
+            # See https://github.com/microsoft/WSL/issues/41279
+            Write-Output "Installing $wslDistribution in WSL"
+            wsl.exe --install $wslDistribution --no-launch
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to install $wslDistribution in WSL"
+            }
         }
     }
     else {
@@ -76,7 +95,28 @@ elseif ($runnerOs -eq "Windows") {
     Write-Output "Starting Docker daemon inside $wslDistribution"
     Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "docker info >/dev/null 2>&1 || { if [ -d /run/systemd/system ]; then systemctl start docker; else service docker start; fi; }"
 
-    # 6. Keep the WSL instance alive for the rest of the job.
+    # 6. Ensure D-Bus is installed so the exported image is self-contained for cache hits.
+    Write-Output "Ensuring dbus-x11 is installed inside $wslDistribution"
+    Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "command -v dbus-launch >/dev/null 2>&1 || { apt-get update && apt-get install -y dbus-x11; }"
+
+    # 7. Export the provisioned distribution to the cache tar (fresh-install path only).
+    if ($ExportToCache -and -not (Test-Path $ExportToCache)) {
+        Write-Output "Exporting $wslDistribution to cache ($ExportToCache)"
+        wsl.exe --terminate $wslDistribution
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to terminate $wslDistribution before export"
+        }
+        $exportDir = Split-Path $ExportToCache -Parent
+        if (-not (Test-Path $exportDir)) {
+            New-Item -ItemType Directory -Force -Path $exportDir | Out-Null
+        }
+        wsl.exe --export $wslDistribution $ExportToCache
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to export $wslDistribution to cache"
+        }
+    }
+
+    # 8. Keep the WSL instance alive for the rest of the job.
     #    WSL terminates an instance when no processes remain under its init (PID 2);
     #    a plain background process (e.g. sleep) does not prevent this, but a D-Bus
     #    session bus launched through `wsl --exec` does. vmIdleTimeout above covers
@@ -90,7 +130,7 @@ elseif ($runnerOs -eq "Windows") {
 
     Write-Output "::endgroup::"
 
-    # 7. Detect the WSL VM gateway IPv4 address.
+    # 9. Detect the WSL VM gateway IPv4 address.
     $wslIp = ((wsl.exe --distribution $wslDistribution --user root -- hostname -I) -replace "`0", "").Trim().Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries) |
         Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } |
         Select-Object -First 1
@@ -101,7 +141,7 @@ elseif ($runnerOs -eq "Windows") {
 
     Write-Output "WSL address: $wslIp"
 
-    # 8. Export env vars and outputs for consuming actions.
+    # 10. Export env vars and outputs for consuming actions.
     Export-Env -Name "WSL_DISTRIBUTION" -Value $wslDistribution
     Export-Env -Name "WSL_IP" -Value $wslIp
 

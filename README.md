@@ -12,7 +12,7 @@ steps:
     uses: Particular/setup-wsl-action@v1
     id: wsl
     with:
-      distribution: Debian
+      distribution: Ubuntu
       memory: 4GB
   - name: Run my service
     shell: pwsh
@@ -27,7 +27,7 @@ The action sets two environment variables for subsequent steps:
 
 | Variable | Windows | Linux |
 |---|---|---|
-| `WSL_DISTRIBUTION` | The distribution name (e.g. `Debian`) | Empty string |
+| `WSL_DISTRIBUTION` | The distribution name (e.g. `Ubuntu`) | Empty string |
 | `WSL_IP` | The WSL VM gateway IPv4 address | `127.0.0.1` |
 
 Service actions can read these env vars to run Docker commands through WSL and construct connection strings with the correct host, without doing their own WSL provisioning. If the env vars are not set (e.g. the action wasn't called), service actions can fall back to provisioning WSL themselves — this is backwards-compatible with existing actions.
@@ -36,14 +36,15 @@ Service actions can read these env vars to run Docker commands through WSL and c
 
 | Input | Required | Default | Description |
 |---|:-:|:-:|---|
-| `distribution` | No | `Debian` | The WSL distribution to install. Debian is recommended as the lightest officially-supported distribution. |
+| `distribution` | No | `Ubuntu` | The WSL distribution to install. Ubuntu is recommended (reliable upstream CDN). Debian is supported but its WSL artifact is currently unreliable upstream (`salsa.debian.org`); see [microsoft/WSL#41279](https://github.com/microsoft/WSL/issues/41279). |
 | `memory` | No | `4GB` | The memory limit for the WSL2 VM. Increase for memory-intensive services. |
+| `enable-cache` | No | `true` | Whether to cache the provisioned WSL distribution across runs via `@actions/cache`. On hit, restores a `wsl --export` tar with `wsl --import`, skipping the distro download and Docker install. Defaults to `true`. |
 
 The following environment variables can also override the inputs, for consistency with existing Particular setup actions:
 
 | Variable | Default | Description |
 |---|---|---|
-| `WSL_DISTRIBUTION_OVERRIDE` | `Debian` | Override the distribution name. |
+| `WSL_DISTRIBUTION_OVERRIDE` | `Ubuntu` | Override the distribution name. |
 | `WSL_MEMORY_OVERRIDE` | `4GB` | Override the WSL2 VM memory limit. |
 
 ## Outputs
@@ -52,17 +53,22 @@ The following environment variables can also override the inputs, for consistenc
 |---|---|
 | `wsl-ip` | The WSL VM gateway IPv4 address. On Linux runners this is `127.0.0.1`. |
 | `distribution` | The WSL distribution name that was provisioned. Empty on Linux runners. |
+| `cache-hit` | `'true'` if the WSL distribution was restored from cache, `'false'` otherwise (including on Linux runners). |
 
 ## What it does (Windows)
 
 1. Writes `%USERPROFILE%\.wslconfig` with `[wsl2]` + `memory=<N>GB` + `vmIdleTimeout=-1` — constrains the VM and prevents idle shutdown. Only writes if the file doesn't exist (local dev configs are preserved).
 2. Enables WSL2 (`wsl --set-default-version 2`).
-3. Installs the distribution if not already registered (`wsl --install Debian --web-download --no-launch`).
+3. Installs the distribution if not already registered (`wsl --install Ubuntu --no-launch`).
 4. Installs Docker inside the distribution (`apt-get install docker.io`).
 5. Starts the Docker daemon (systemd or SysV service).
 6. Launches a D-Bus session bus to keep the WSL instance alive for the rest of the job (WSL terminates instances when no processes remain under its init).
 7. Detects the WSL VM gateway IPv4 address via `hostname -I`.
 8. Sets `WSL_DISTRIBUTION` and `WSL_IP` environment variables and action outputs.
+
+### Caching
+
+The action caches a `wsl --export` tar of the fully-provisioned distribution (Docker included) keyed on `setup-wsl-<distro>-distro<distroImageSha256[:16]>-setup<sha256(setup.ps1)[:16]>`. The distro image hash is read from Microsoft's [`DistributionInfo.json`](https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json) — the same manifest `wsl --install` resolves against — so the cache **refreshes automatically when a new distro image is published**, keeping the base image current for security updates. On a cache hit it imports the tar with `wsl --import`, skipping the download and the Docker install. Subject to the 10 GB per-repository GitHub Actions cache limit (LRU + weekly eviction). Disable with `enable-cache: false`.
 
 ## What it does (Linux)
 
@@ -73,8 +79,8 @@ Nothing. Docker is already available on the runner. Sets `WSL_IP=127.0.0.1` and 
 This action is designed for Particular's CI `setup-*-action` pattern. It is public, but external users should understand it is opinionated for this specific use case.
 
 - **GitHub Actions hosted Windows runners only.** Requires WSL2 with nested virtualization. Will not work on self-hosted runners without WSL2, macOS, or other CI systems.
-- **Installs Debian via `wsl --install --web-download`.** Downloads from Microsoft on every run. No caching of the distribution (yet).
-- **Installs Docker via Debian's `docker.io` apt package**, not Docker's official repositories. May lag behind official Docker releases.
+- **Default distribution is Ubuntu.** Distribution images are fetched from each distro's own infrastructure (Ubuntu from `releases.ubuntu.com`, Debian from `salsa.debian.org`), which is outside our control. Debian's WSL artifact on `salsa.debian.org` is currently serving inconsistent bytes and fails `Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST`, so Ubuntu (Canonical's release CDN) is the default and recommended; Debian remains selectable but may be unreliable until upstream is fixed ([microsoft/WSL#41279](https://github.com/microsoft/WSL/issues/41279)). The provisioned distribution is cached via `wsl --export`/`wsl --import` (keyed on the distro image hash from Microsoft's manifest and a hash of `setup.ps1`), so subsequent runs skip the download and the Docker install.
+- **Installs Docker via the distribution's `docker.io` apt package**, not Docker's official repositories. May lag behind official Docker releases.
 - **Writes `%USERPROFILE%\.wslconfig` if it doesn't exist.** Won't overwrite an existing file. This is a side effect on the runner.
 - **D-Bus keep-alive is a workaround** for WSL's idle shutdown behavior. It may break with future WSL versions.
 - **No cleanup of the WSL distribution after the job.** On hosted runners the VM is destroyed. On self-hosted runners the distribution persists and accumulates.
@@ -96,7 +102,7 @@ To test `setup.ps1` directly:
 
 ```bash
 $Env:RUNNER_OS=Windows
-.\setup.ps1 -Distribution Debian -Memory 4GB
+.\setup.ps1 -Distribution Ubuntu -Memory 4GB
 ```
 
 Open the folder in Visual Studio Code with the DevContainer for a consistent development environment with Node.js, Docker-in-Docker, and PowerShell.
