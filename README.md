@@ -76,6 +76,8 @@ Invoke-Wsl -CheckExitCode -Command "docker run --name myservice --detach --publi
 
 `Invoke-Wsl` wraps `wsl.exe`, so it is Windows-only. On Linux runners, Docker is native and consuming actions run it directly — the module path is still exported so the `Import-Module` line is identical on both OSes.
 
+The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D:\a\foo\bar.sh`) into the equivalent path inside the WSL distribution (e.g. `/mnt/d/a/foo/bar.sh`) — useful when a consuming action needs to pass a host-side file (such as an init script) into WSL. It is also Windows-only.
+
 ## What it does (Windows)
 
 1. Writes `%USERPROFILE%\.wslconfig` with `[wsl2]` + `memory=<N>GB` + `vmIdleTimeout=-1` — constrains the VM and prevents idle shutdown. Only writes if the file doesn't exist (local dev configs are preserved).
