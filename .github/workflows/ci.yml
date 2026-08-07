@@ -1,33 +1,39 @@
 name: CI
 on:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
   push:
     branches:
       - main
     paths-ignore:
-      - '**.md'
+      - '**/*.md'
   workflow_dispatch:
 jobs:
   ci:
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.name }}
+    name: ${{ matrix.name }}${{ matrix.name == 'Windows' && format('-WSL_Distro:{0}', matrix.wsl_distribution) || '' }}
     strategy:
-      fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
         include:
           - os: windows-latest
             name: Windows
+            wsl_distribution: Ubuntu
+          - os: windows-latest
+            name: Windows
+            wsl_distribution: Debian
           - os: ubuntu-latest
             name: Linux
+            wsl_distribution: Debian
+      fail-fast: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
       - name: Setup WSL
         uses: ./
         id: wsl
         with:
-          distribution: Debian
+          distribution: ${{ matrix.wsl_distribution }}
           memory: 4GB
       - name: Verify
         shell: pwsh

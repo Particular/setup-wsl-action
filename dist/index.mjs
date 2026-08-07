@@ -31192,14 +31192,20 @@ function getIDToken(aud) {
 
 
 const index_dirname = external_node_path_namespaceObject.dirname(external_node_url_.fileURLToPath(import.meta.url));
-
 const setupPs1 = external_node_path_namespaceObject.resolve(index_dirname, '../setup.ps1');
 
-const distribution = getInput('distribution') || 'Debian';
-const memory = getInput('memory') || '4GB';
+const supportedDistros = ['ubuntu', 'debian'];
 
 async function run() {
+    const distribution = getInput('distribution') || 'Debian';
+    const memory = getInput('memory') || '4GB';
+
     try {
+        if (!supportedDistros.includes(distribution.toLowerCase())) {
+            setFailed(`Unsupported distribution: ${distribution}. Supported options are: ${supportedDistros.join(', ')}`);
+            return;
+        }
+
         console.log('Running setup-wsl-action');
         console.log(`distribution = ${distribution}`);
         console.log(`memory = ${memory}`);
