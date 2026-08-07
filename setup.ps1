@@ -70,10 +70,26 @@ elseif ($runnerOs -eq "Windows") {
             }
         }
         else {
-            Write-Output "Installing $wslDistribution in WSL"
-            wsl.exe --install $wslDistribution --web-download --no-launch
+            # Distribution installs can fail transiently (e.g. Wsl/InstallDistro/VerifyChecksum/
+            # TRUST_E_BAD_DIGEST when Microsoft's CDN and distro manifest are briefly out of
+            # sync, or network blips), so retry with backoff. Uses the service-managed install
+            # (no --web-download), matching the sibling setup-*-action repos; it can still fail
+            # transiently, which is exactly what the retry absorbs.
+            $maxAttempts = 3
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                Write-Output "Installing $wslDistribution in WSL (attempt $attempt of $maxAttempts)"
+                wsl.exe --install $wslDistribution --no-launch
+                if ($LASTEXITCODE -eq 0) {
+                    break
+                }
+                if ($attempt -lt $maxAttempts) {
+                    $delay = $attempt * 15
+                    Write-Output "Install failed (exit $LASTEXITCODE). Retrying in $delay seconds..."
+                    Start-Sleep -Seconds $delay
+                }
+            }
             if ($LASTEXITCODE -ne 0) {
-                throw "Failed to install $wslDistribution in WSL"
+                throw "Failed to install $wslDistribution in WSL after $maxAttempts attempts"
             }
         }
     }

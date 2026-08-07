@@ -59,7 +59,7 @@ The following environment variables can also override the inputs, for consistenc
 
 1. Writes `%USERPROFILE%\.wslconfig` with `[wsl2]` + `memory=<N>GB` + `vmIdleTimeout=-1` — constrains the VM and prevents idle shutdown. Only writes if the file doesn't exist (local dev configs are preserved).
 2. Enables WSL2 (`wsl --set-default-version 2`).
-3. Installs the distribution if not already registered (`wsl --install Debian --web-download --no-launch`).
+3. Installs the distribution if not already registered (`wsl --install Debian --no-launch`, retried on failure).
 4. Installs Docker inside the distribution (`apt-get install docker.io`).
 5. Starts the Docker daemon (systemd or SysV service).
 6. Launches a D-Bus session bus to keep the WSL instance alive for the rest of the job (WSL terminates instances when no processes remain under its init).
@@ -79,7 +79,7 @@ Nothing. Docker is already available on the runner. Sets `WSL_IP=127.0.0.1` and 
 This action is designed for Particular's CI `setup-*-action` pattern. It is public, but external users should understand it is opinionated for this specific use case.
 
 - **GitHub Actions hosted Windows runners only.** Requires WSL2 with nested virtualization. Will not work on self-hosted runners without WSL2, macOS, or other CI systems.
-- **Installs Debian via `wsl --install --web-download`.** Downloads from Microsoft on the first run. The provisioned distribution is cached via `wsl --export`/`wsl --import` (keyed on the WSL version and a hash of `setup.ps1`), so subsequent runs skip the download and the Docker install.
+- **Installs Debian via `wsl --install` (no `--web-download`), retried with backoff.** Distribution downloads can fail transiently — notably `Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST` when Microsoft's CDN and distro manifest are briefly out of sync — so the install is retried a few times. The retry (not the delivery path) is what makes this reliable. The provisioned distribution is cached via `wsl --export`/`wsl --import` (keyed on the WSL version and a hash of `setup.ps1`), so subsequent runs skip the download and the Docker install.
 - **Installs Docker via Debian's `docker.io` apt package**, not Docker's official repositories. May lag behind official Docker releases.
 - **Writes `%USERPROFILE%\.wslconfig` if it doesn't exist.** Won't overwrite an existing file. This is a side effect on the runner.
 - **D-Bus keep-alive is a workaround** for WSL's idle shutdown behavior. It may break with future WSL versions.
