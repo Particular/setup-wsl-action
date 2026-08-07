@@ -12,20 +12,41 @@ const setupPs1 = path.resolve(__dirname, '../setup.ps1');
 
 const supportedDistros = ['ubuntu', 'debian'];
 
+// Microsoft's authoritative list of installable WSL distributions. Each entry's
+// Amd64Url.Sha256 changes exactly when a new distro image is published — the signal
+// we want the cache to refresh on, so the base image stays current (security updates).
+// This is the same manifest `wsl --install` resolves against.
+const DISTRIBUTION_INFO_URL = 'https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json';
+
+async function getDistroImageSha256(distribution) {
+    const distroLower = distribution.toLowerCase();
+    try {
+        const res = await fetch(DISTRIBUTION_INFO_URL);
+        if (!res.ok) {
+            core.debug(`DistributionInfo.json fetch returned ${res.status}`);
+            return 'unknown';
+        }
+        const json = await res.json();
+        for (const family of Object.values(json.ModernDistributions || {})) {
+            const entry = (Array.isArray(family) ? family : []).find(
+                e => (e?.Name ?? '').toLowerCase() === distroLower
+            );
+            if (entry?.Amd64Url?.Sha256) {
+                return entry.Amd64Url.Sha256;
+            }
+        }
+        core.debug(`No '${distribution}' entry found in DistributionInfo.json`);
+    } catch (err) {
+        core.debug(`Could not fetch/parse DistributionInfo.json: ${err.message}`);
+    }
+    return 'unknown';
+}
+
 async function computeCacheKey(distribution) {
     const parts = ['setup-wsl', distribution.toLowerCase()];
 
-    let wslVersion = 'unknown';
-    try {
-        const out = await exec.getExecOutput('wsl.exe', ['--version'], { silent: true });
-        const line = out.stdout.split(/\r?\n/).find(l => /version/i.test(l));
-        if (line) {
-            wslVersion = line.split(':')[1]?.trim() || wslVersion;
-        }
-    } catch (err) {
-        core.debug(`Could not determine WSL version: ${err.message}`);
-    }
-    parts.push(`wsl-${wslVersion}`);
+    const distroSha = await getDistroImageSha256(distribution);
+    parts.push(`distro-${distroSha.slice(0, 16)}`);
 
     try {
         const hash = crypto.createHash('sha256').update(fs.readFileSync(setupPs1)).digest('hex').slice(0, 16);

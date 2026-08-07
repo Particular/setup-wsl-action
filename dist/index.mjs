@@ -42154,8 +42154,8 @@ function getExecOutput(commandLine, args, options) {
         let stdout = '';
         let stderr = '';
         //Using string decoder covers the case where a mult-byte character is split
-        const stdoutDecoder = new external_string_decoder_.StringDecoder('utf8');
-        const stderrDecoder = new external_string_decoder_.StringDecoder('utf8');
+        const stdoutDecoder = new StringDecoder('utf8');
+        const stderrDecoder = new StringDecoder('utf8');
         const originalStdoutListener = (_a = options === null || options === void 0 ? void 0 : options.listeners) === null || _a === void 0 ? void 0 : _a.stdout;
         const originalStdErrListener = (_b = options === null || options === void 0 ? void 0 : options.listeners) === null || _b === void 0 ? void 0 : _b.stderr;
         const stdErrListener = (data) => {
@@ -95393,20 +95393,41 @@ const setupPs1 = external_node_path_namespaceObject.resolve(index_dirname, '../s
 
 const supportedDistros = ['ubuntu', 'debian'];
 
+// Microsoft's authoritative list of installable WSL distributions. Each entry's
+// Amd64Url.Sha256 changes exactly when a new distro image is published — the signal
+// we want the cache to refresh on, so the base image stays current (security updates).
+// This is the same manifest `wsl --install` resolves against.
+const DISTRIBUTION_INFO_URL = 'https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json';
+
+async function getDistroImageSha256(distribution) {
+    const distroLower = distribution.toLowerCase();
+    try {
+        const res = await fetch(DISTRIBUTION_INFO_URL);
+        if (!res.ok) {
+            core_debug(`DistributionInfo.json fetch returned ${res.status}`);
+            return 'unknown';
+        }
+        const json = await res.json();
+        for (const family of Object.values(json.ModernDistributions || {})) {
+            const entry = (Array.isArray(family) ? family : []).find(
+                e => (e?.Name ?? '').toLowerCase() === distroLower
+            );
+            if (entry?.Amd64Url?.Sha256) {
+                return entry.Amd64Url.Sha256;
+            }
+        }
+        core_debug(`No '${distribution}' entry found in DistributionInfo.json`);
+    } catch (err) {
+        core_debug(`Could not fetch/parse DistributionInfo.json: ${err.message}`);
+    }
+    return 'unknown';
+}
+
 async function computeCacheKey(distribution) {
     const parts = ['setup-wsl', distribution.toLowerCase()];
 
-    let wslVersion = 'unknown';
-    try {
-        const out = await getExecOutput('wsl.exe', ['--version'], { silent: true });
-        const line = out.stdout.split(/\r?\n/).find(l => /version/i.test(l));
-        if (line) {
-            wslVersion = line.split(':')[1]?.trim() || wslVersion;
-        }
-    } catch (err) {
-        core_debug(`Could not determine WSL version: ${err.message}`);
-    }
-    parts.push(`wsl-${wslVersion}`);
+    const distroSha = await getDistroImageSha256(distribution);
+    parts.push(`distro-${distroSha.slice(0, 16)}`);
 
     try {
         const hash = external_node_crypto_.createHash('sha256').update(external_node_fs_namespaceObject.readFileSync(setupPs1)).digest('hex').slice(0, 16);
