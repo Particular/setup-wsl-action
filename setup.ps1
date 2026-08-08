@@ -93,15 +93,21 @@ elseif ($runnerOs -eq "Windows") {
     Write-Output "Ensuring Docker is installed inside $wslDistribution"
     Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "command -v docker >/dev/null 2>&1 || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --yes docker.io; }"
 
-    # 5. Start the Docker daemon (systemd if available, otherwise SysV).
+    # 5. Ensure Docker Compose (v2 plugin) is installed inside the WSL distribution.
+    #    The docker.io package ships the engine and CLI but not the compose plugin.
+    #    The plugin package is named docker-compose-v2 on Ubuntu and docker-compose on Debian.
+    Write-Output "Ensuring Docker Compose is installed inside $wslDistribution"
+    Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "docker compose version >/dev/null 2>&1 || { apt-get update && (DEBIAN_FRONTEND=noninteractive apt-get install --yes docker-compose-v2 || DEBIAN_FRONTEND=noninteractive apt-get install --yes docker-compose); }"
+
+    # 6. Start the Docker daemon (systemd if available, otherwise SysV).
     Write-Output "Starting Docker daemon inside $wslDistribution"
     Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "docker info >/dev/null 2>&1 || { if [ -d /run/systemd/system ]; then systemctl start docker; else service docker start; fi; }"
 
-    # 6. Ensure D-Bus is installed so the exported image is self-contained for cache hits.
+    # 7. Ensure D-Bus is installed so the exported image is self-contained for cache hits.
     Write-Output "Ensuring dbus-x11 is installed inside $wslDistribution"
     Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "command -v dbus-launch >/dev/null 2>&1 || { apt-get update && apt-get install -y dbus-x11; }"
 
-    # 7. Export the provisioned distribution to the cache tar (fresh-install path only).
+    # 8. Export the provisioned distribution to the cache tar (fresh-install path only).
     if ($ExportToCache -and -not (Test-Path $ExportToCache)) {
         Write-Output "Exporting $wslDistribution to cache ($ExportToCache)"
         wsl.exe --terminate $wslDistribution
@@ -118,7 +124,7 @@ elseif ($runnerOs -eq "Windows") {
         }
     }
 
-    # 8. Keep the WSL instance alive for the rest of the job.
+    # 9. Keep the WSL instance alive for the rest of the job.
     #    WSL terminates an instance when no processes remain under its init (PID 2);
     #    a plain background process (e.g. sleep) does not prevent this, but a D-Bus
     #    session bus launched through `wsl --exec` does. vmIdleTimeout above covers
@@ -132,7 +138,7 @@ elseif ($runnerOs -eq "Windows") {
 
     Write-Output "::endgroup::"
 
-    # 9. Detect the WSL VM gateway IPv4 address.
+    # 10. Detect the WSL VM gateway IPv4 address.
     $wslIp = ((wsl.exe --distribution $wslDistribution --user root -- hostname -I) -replace "`0", "").Trim().Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries) |
         Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } |
         Select-Object -First 1
@@ -143,7 +149,7 @@ elseif ($runnerOs -eq "Windows") {
 
     Write-Output "WSL address: $wslIp"
 
-    # 10. Export env vars and outputs for consuming actions.
+    # 11. Export env vars and outputs for consuming actions.
     Export-Env -Name "WSL_DISTRIBUTION" -Value $wslDistribution
     Export-Env -Name "WSL_IP" -Value $wslIp
     Export-Env -Name "WSL_TOOLS_MODULE_PATH" -Value $modulePath
