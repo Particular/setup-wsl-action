@@ -99,15 +99,37 @@ elseif ($runnerOs -eq "Windows") {
     Write-Output "Ensuring Docker Compose is installed inside $wslDistribution"
     Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "docker compose version >/dev/null 2>&1 || { apt-get update && (DEBIAN_FRONTEND=noninteractive apt-get install --yes docker-compose-v2 || DEBIAN_FRONTEND=noninteractive apt-get install --yes docker-compose); }"
 
-    # 6. Start the Docker daemon (systemd if available, otherwise SysV).
-    Write-Output "Starting Docker daemon inside $wslDistribution"
-    Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "docker info >/dev/null 2>&1 || { if [ -d /run/systemd/system ]; then systemctl start docker; else service docker start; fi; }"
+    # 6. Pin Docker's bridge and network pools to 10.x. WSL2 hands the VM a random
+    #    /20 from 172.16.0.0/12 on every boot, and Docker's defaults (172.17.0.0/16)
+    #    live in that range, so port publishing randomly breaks when the NAT lands
+    #    on 172.17.x (e.g. MQRC_HOST_NOT_AVAILABLE). Written via base64 to avoid
+    #    WSL interop quoting issues.
+    Write-Output "Pinning Docker bridge and network subnets to 10.x (WSL NAT uses 172.16.0.0/12)"
+    $daemonJson = @'
+{
+  "bip": "10.11.0.1/24",
+  "default-address-pools": [
+    { "base": "10.12.0.0/16", "size": 24 },
+    { "base": "10.13.0.0/16", "size": 24 }
+  ]
+}
+'@
+    $daemonJsonBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($daemonJson))
+    Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "mkdir -p /etc/docker && echo $daemonJsonBase64 | base64 -d > /etc/docker/daemon.json"
 
-    # 7. Ensure D-Bus is installed so the exported image is self-contained for cache hits.
+    # 7. Start the Docker daemon (systemd if available, otherwise SysV). Restart
+    #    rather than start — systemd may already have started Docker at VM boot,
+    #    and the pinned subnets only apply after a restart.
+    Write-Output "Starting Docker daemon inside $wslDistribution"
+    Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "if [ -d /run/systemd/system ]; then systemctl restart docker; else service docker restart; fi"
+    $bridgeSubnet = ((Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "docker network inspect bridge --format '{{(index .IPAM.Config 0).Subnet}}'") -replace "`0", "").Trim()
+    Write-Output "Docker bridge subnet: $bridgeSubnet"
+
+    # 8. Ensure D-Bus is installed so the exported image is self-contained for cache hits.
     Write-Output "Ensuring dbus-x11 is installed inside $wslDistribution"
     Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "command -v dbus-launch >/dev/null 2>&1 || { apt-get update && apt-get install -y dbus-x11; }"
 
-    # 8. Export the provisioned distribution to the cache tar (fresh-install path only).
+    # 9. Export the provisioned distribution to the cache tar (fresh-install path only).
     if ($ExportToCache -and -not (Test-Path $ExportToCache)) {
         Write-Output "Exporting $wslDistribution to cache ($ExportToCache)"
         wsl.exe --terminate $wslDistribution
@@ -124,7 +146,7 @@ elseif ($runnerOs -eq "Windows") {
         }
     }
 
-    # 9. Keep the WSL instance alive for the rest of the job.
+    # 10. Keep the WSL instance alive for the rest of the job.
     #    WSL terminates an instance when no processes remain under its init (PID 2);
     #    a plain background process (e.g. sleep) does not prevent this, but a D-Bus
     #    session bus launched through `wsl --exec` does. vmIdleTimeout above covers
@@ -138,7 +160,7 @@ elseif ($runnerOs -eq "Windows") {
 
     Write-Output "::endgroup::"
 
-    # 10. Detect the WSL VM gateway IPv4 address.
+    # 11. Detect the WSL VM gateway IPv4 address.
     $wslIp = ((wsl.exe --distribution $wslDistribution --user root -- hostname -I) -replace "`0", "").Trim().Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries) |
         Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } |
         Select-Object -First 1
@@ -149,7 +171,7 @@ elseif ($runnerOs -eq "Windows") {
 
     Write-Output "WSL address: $wslIp"
 
-    # 11. Export env vars and outputs for consuming actions.
+    # 12. Export env vars and outputs for consuming actions.
     Export-Env -Name "WSL_DISTRIBUTION" -Value $wslDistribution
     Export-Env -Name "WSL_IP" -Value $wslIp
     Export-Env -Name "WSL_TOOLS_MODULE_PATH" -Value $modulePath
