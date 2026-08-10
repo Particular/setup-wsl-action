@@ -77,6 +77,16 @@ jobs:
             # Dogfood: omit -Distribution so it defaults to $WSL_DISTRIBUTION.
             $output = (Invoke-Wsl -CheckExitCode -Command "docker info --format '{{.ServerVersion}}'") -replace "`0", ""
             Write-Host "Docker server version: $output"
+
+            # The bridge subnet must be the pinned 10.x one (setup.ps1 writes
+            # /etc/docker/daemon.json) — not Docker's default 172.17.0.0/16,
+            # which overlaps WSL2's random NAT subnet (172.16.0.0/12) and breaks
+            # host->container port publishing.
+            $bridgeSubnet = ((Invoke-Wsl -CheckExitCode -Command "docker network inspect bridge --format '{{(index .IPAM.Config 0).Subnet}}'") -replace "`0", "").Trim()
+            Write-Host "Docker bridge subnet: $bridgeSubnet"
+            if ($bridgeSubnet -ne "10.11.0.0/24") {
+              throw "Expected Docker bridge subnet 10.11.0.0/24, got $bridgeSubnet"
+            }
           }
           else {
             Write-Host "Linux runner — verifying Docker is available..."

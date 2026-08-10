@@ -84,10 +84,11 @@ The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D
 2. Enables WSL2 (`wsl --set-default-version 2`).
 3. Installs the distribution if not already registered (`wsl --install Ubuntu --no-launch`).
 4. Installs Docker inside the distribution (`apt-get install docker.io`).
-5. Starts the Docker daemon (systemd or SysV service).
-6. Launches a D-Bus session bus to keep the WSL instance alive for the rest of the job (WSL terminates instances when no processes remain under its init).
-7. Detects the WSL VM gateway IPv4 address via `hostname -I`.
-8. Sets `WSL_DISTRIBUTION`, `WSL_IP`, and `WSL_TOOLS_MODULE_PATH` environment variables and action outputs.
+5. Pins Docker's bridge and network pools to `10.x` via `/etc/docker/daemon.json`, so they can't overlap WSL2's randomly assigned NAT subnet (`172.16.0.0/12`).
+6. Starts the Docker daemon (systemd or SysV service), restarting if systemd already started it at VM boot so the pinned subnets are applied.
+7. Launches a D-Bus session bus to keep the WSL instance alive for the rest of the job (WSL terminates instances when no processes remain under its init).
+8. Detects the WSL VM gateway IPv4 address via `hostname -I`.
+9. Sets `WSL_DISTRIBUTION`, `WSL_IP`, and `WSL_TOOLS_MODULE_PATH` environment variables and action outputs.
 
 ### Caching
 
@@ -104,6 +105,7 @@ This action is designed for Particular's CI `setup-*-action` pattern. It is publ
 - **GitHub Actions hosted Windows runners only.** Requires WSL2 with nested virtualization. Will not work on self-hosted runners without WSL2, macOS, or other CI systems.
 - **Default distribution is Ubuntu.** Distribution images are fetched from each distro's own infrastructure (Ubuntu from `releases.ubuntu.com`, Debian from `salsa.debian.org`), which is outside our control. Debian's WSL artifact on `salsa.debian.org` is currently serving inconsistent bytes and fails `Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST`, so Ubuntu (Canonical's release CDN) is the default and recommended; Debian remains selectable but may be unreliable until upstream is fixed ([microsoft/WSL#41279](https://github.com/microsoft/WSL/issues/41279)). The provisioned distribution is cached via `wsl --export`/`wsl --import` (keyed on the distro image hash from Microsoft's manifest and a hash of `setup.ps1`), so subsequent runs skip the download and the Docker install.
 - **Installs Docker via the distribution's `docker.io` apt package**, not Docker's official repositories. May lag behind official Docker releases.
+- **Pins Docker's bridge subnet to `10.x`.** Docker's defaults (bridge `172.17.0.0/16`, pools up to `172.30.0.0/16`) overlap WSL2's randomly assigned NAT range (`172.16.0.0/12`), intermittently breaking host→container port forwarding when the NAT lands on `172.17.x`. Tools inside the distro that hardcode `172.17.0.0/16` will need updating.
 - **Writes `%USERPROFILE%\.wslconfig` if it doesn't exist.** Won't overwrite an existing file. This is a side effect on the runner.
 - **D-Bus keep-alive is a workaround** for WSL's idle shutdown behavior. It may break with future WSL versions.
 - **No cleanup of the WSL distribution after the job.** On hosted runners the VM is destroyed. On self-hosted runners the distribution persists and accumulates.
