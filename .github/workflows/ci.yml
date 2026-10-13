@@ -12,39 +12,21 @@ on:
 jobs:
   ci:
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.name }}${{ matrix.name == 'Windows' && format('-WSL_Distro:{0}-{1}', matrix.wsl_distribution, matrix.cache_label) || '' }}
+    name: ${{ matrix.os == 'windows-latest' && format('Windows-WSL_Distro:{0}-cache:{1}{2}', matrix.wsl_distribution, matrix.cache, matrix.restore && '-restore' || '') || 'Linux' }}
     strategy:
       matrix:
+        os: [windows-latest]
+        wsl_distribution: [Ubuntu, Debian]
+        cache: [true, false]
+        restore: [false]
         include:
-          - os: windows-latest
-            name: Windows
-            wsl_distribution: Ubuntu
-            cache: true
-            cache_label: cached
-          # Non-cached variant: exercises the fresh-install path (distro download +
-          # Docker install) that the cached job skips.
-          - os: windows-latest
-            name: Windows
-            wsl_distribution: Ubuntu
-            cache: false
-            cache_label: nocache
-          # Debian non-cached variant: exercises the fresh-install path (distro download +
-          # Docker install) that the cached job skips.
-          - os: windows-latest
-            name: Windows
-            wsl_distribution: Debian
-            cache: false
-            cache_label: nocache
-          - os: windows-latest
-            name: Windows
-            wsl_distribution: Debian
-            cache: true
-            cache_label: cached
           - os: ubuntu-latest
-            name: Linux
             wsl_distribution: Debian
             cache: true
-            cache_label: ''
+          - os: windows-latest
+            wsl_distribution: Ubuntu
+            cache: true
+            restore: true
       fail-fast: false
     steps:
       - name: Checkout
@@ -52,6 +34,9 @@ jobs:
       - name: Setup WSL
         uses: ./
         id: wsl
+        # Cache versions include the tar path; isolate the restore job from parallel cache uploads.
+        env:
+          RUNNER_TEMP: ${{ matrix.restore && format('{0}/cache-restore', runner.temp) || runner.temp }}
         with:
           distribution: ${{ matrix.wsl_distribution }}
           memory: 4GB
@@ -94,4 +79,41 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               throw "Docker is not available on the runner"
             }
+          }
+      - name: Unregister Ubuntu before cache restore
+        if: matrix.restore
+        shell: pwsh
+        run: |
+          wsl.exe --unregister $env:WSL_DISTRIBUTION
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to unregister the distribution before cache restore"
+          }
+      - name: Restore Ubuntu from cache
+        if: matrix.restore
+        uses: ./
+        id: restored
+        env:
+          RUNNER_TEMP: ${{ format('{0}/cache-restore', runner.temp) }}
+        with:
+          distribution: ${{ matrix.wsl_distribution }}
+          memory: 4GB
+          enable-cache: true
+      - name: Verify restored Ubuntu
+        if: matrix.restore
+        shell: pwsh
+        env:
+          CACHE_HIT: ${{ steps.restored.outputs.cache-hit }}
+        run: |
+          if ($env:CACHE_HIT -ne 'true') {
+            throw "Expected a cache hit when restoring Ubuntu"
+          }
+          if (-not $env:WSL_IP) {
+            throw "WSL_IP was not set after cache restore"
+          }
+          Import-Module $env:WSL_TOOLS_MODULE_PATH
+          Invoke-Wsl -CheckExitCode -Command "docker info --format '{{.ServerVersion}}'"
+          Invoke-Wsl -CheckExitCode -Command "docker compose version"
+          $bridgeSubnet = ((Invoke-Wsl -CheckExitCode -Command "docker network inspect bridge --format '{{(index .IPAM.Config 0).Subnet}}'") -replace "`0", "").Trim()
+          if ($bridgeSubnet -ne "10.11.0.0/24") {
+            throw "Expected Docker bridge subnet 10.11.0.0/24 after cache restore, got $bridgeSubnet"
           }

@@ -81,8 +81,8 @@ The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D
 ## What it does (Windows)
 
 1. Writes `%USERPROFILE%\.wslconfig` with `[wsl2]` + `memory=<N>GB` + `vmIdleTimeout=-1`. This constrains the VM and prevents idle shutdown. Only writes if the file doesn't exist (local dev configs are preserved).
-2. Enables WSL2 (`wsl --set-default-version 2`).
-3. Installs the distribution if not already registered (`wsl --install Ubuntu --no-launch`).
+2. Logs runner image, Windows build, virtualization indicators, Windows feature states, and WSL version/status. Validates WSL2 prerequisites, then selects WSL2 (`wsl --set-default-version 2`); selecting the default does not enable Windows features.
+3. Installs the distribution if not already registered. For Ubuntu, resolves the image URL and SHA-256 from Microsoft's manifest, downloads and verifies the image, then installs it with `wsl --install --from-file <image.wsl> --name Ubuntu --no-launch`. Debian retains `wsl --install Debian --no-launch`; cache hits retain `wsl --import`.
 4. Installs Docker inside the distribution (`apt-get install docker.io`).
 5. Pins Docker's bridge and network pools to `10.x` via `/etc/docker/daemon.json`, so they can't overlap WSL2's randomly assigned NAT subnet (`172.16.0.0/12`).
 6. Starts the Docker daemon (systemd or SysV service), restarting if systemd already started it at VM boot so the pinned subnets are applied.
@@ -94,6 +94,70 @@ The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D
 
 The action caches a `wsl --export` tar of the fully-provisioned distribution (Docker included) keyed on `setup-wsl-<distro>-distro<distroImageSha256[:16]>-setup<sha256(setup.ps1)[:16]>`. The distro image hash comes from Microsoft's [`DistributionInfo.json`](https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json), the same manifest `wsl --install` resolves against, so the cache refreshes automatically when a new distro image is published. This keeps the base image current for security updates. On a cache hit it imports the tar with `wsl --import`, skipping the download and the Docker install. The cache is subject to the 10 GB per-repository GitHub Actions limit (LRU + weekly eviction). Disable with `enable-cache: false`.
 
+### Troubleshooting provisioning hangs
+
+The `WSL runner diagnostics and prerequisites` log group records the image (`ImageOS`/`ImageVersion`), Windows build, exposed virtualization flags, feature states, and WSL version/status. WSL2 requires `VirtualMachinePlatform` to be enabled. Inbox WSL additionally requires `Microsoft-Windows-Subsystem-Linux`; modern Store/MSI WSL2 does not require that legacy feature. Required features in a pending state fail with reboot guidance. The action does not enable features or reboot the runner during a job. General Windows servicing/update reboot markers produce a warning, not an automatic rejection.
+
+Virtualization flags can be masked inside hosted virtual machines, so they are diagnostic only. Checked WSL commands and an explicit first boot (`/bin/true`) validate operational readiness.
+
+Windows feature queries require administrator privileges. When running locally without elevation, the action logs those states as unknown and uses operational WSL checks instead, so an already working installation is not rejected just because DISM cannot query its features.
+
+Each provisioning command logs its start and completion, exit code, and elapsed time. For a stuck run, find the last `Starting:` message without a matching completion:
+
+- **Version/status, default version, or distribution enumeration:** investigate the runner image and WSL installation/service.
+- **Resolve Ubuntu image manifest / Download Ubuntu image:** investigate GitHub's manifest endpoint or Ubuntu's image source. Downloads use the hosted runner's `curl.exe` progress meter, three attempts with five-second delays, a 30-second connection timeout, and a 60-second low-speed limit (below 1 KiB/s). Each manifest attempt is capped at 60 seconds; each image attempt at 10 minutes. Failed attempts discard partial files.
+- **Verify Ubuntu image SHA-256:** a mismatch fails before installation; investigate the upstream artifact or manifest.
+- **Install from verified local Ubuntu image:** downloading and verification have already completed; investigate the local WSL installer.
+- **Download and install Debian:** investigate Debian's distribution source or WSL installer.
+- **Import from cache:** investigate the cached image and WSL import/storage path.
+- **First boot:** investigate WSL2 VM startup and nested virtualization.
+- **A WSL bash command:** use the preceding setup phase message to distinguish package installation, Docker startup, and other Linux-side operations.
+
+Compare affected and successful runs by image and WSL version before changing installation behavior. A job timeout is a safety net, not a root-cause fix. CI covers Ubuntu and Debian on Windows with caching enabled and disabled, plus the Linux no-op path. One additional Ubuntu job provisions with caching enabled, unregisters the distribution, then runs setup again and requires a cache hit before verifying Docker, Compose, and the bridge subnet.
+
+### Diagnosing local installation stalls and resource contention
+
+Set `SETUP_WSL_DIAGNOSTICS: 'true'` on the setup action's step to enable diagnostics around distribution installation, cache import, and explicit first boot. Downloads and their flags are unchanged. With diagnostics disabled (the default), provisioning retains its existing synchronous execution path.
+
+The diagnostic mode periodically logs host CPU utilization, available/committed memory, disk I/O and free space, and selected WSL/VM and .NET build processes. Process CPU is cumulative, so compare consecutive samples; command lines and environment variables are not collected. Samples and operation timestamps are also saved under `${{ runner.temp }}/setup-wsl-diagnostics`.
+
+On elevated Windows runners it additionally records a narrow WSL/VM-compute ETW trace, using circular files capped at 128 MB per operation. This starts before installation/import/first boot so an early stall is captured, rather than waiting for a presumed timeout. Collection failures warn without failing provisioning. Traces are stopped when the monitored command finishes, but a runner-enforced step timeout can bypass cleanup. Add the following **separate steps after setup** to stop any interrupted action-owned traces and upload the files:
+
+```yaml
+- name: Setup WSL with diagnostics
+  id: wsl
+  uses: Particular/setup-wsl-action@v1
+  env:
+    SETUP_WSL_DIAGNOSTICS: 'true'
+  with:
+    memory: 8GB
+    enable-cache: false
+- name: Stop interrupted traces
+  if: always() && runner.os == 'Windows'
+  shell: pwsh
+  run: |
+    if ($env:SETUP_WSL_DIAGNOSTICS_CLEANUP_PATH) {
+      & $env:SETUP_WSL_DIAGNOSTICS_CLEANUP_PATH
+    }
+- name: Upload WSL diagnostics
+  if: always() && runner.os == 'Windows'
+  uses: actions/upload-artifact@v7.0.2
+  with:
+    name: wsl-diagnostics
+    path: ${{ env.SETUP_WSL_DIAGNOSTICS_PATH }}
+    retention-days: 7
+```
+
+Diagnostic mode exports `SETUP_WSL_DIAGNOSTICS_CLEANUP_PATH` and `SETUP_WSL_DIAGNOSTICS_PATH` before provisioning, so the later cleanup and upload steps do not depend on a successful setup and use the original directory even if setup overrides `RUNNER_TEMP`. Hard job cancellation or runner loss may prevent even `always()` steps from executing; this cannot guarantee trace recovery. Diagnostic artifacts can contain paths and WSL error details: review them before sharing, and do not publish unredacted traces externally.
+
+The manually dispatched **WSL installation diagnostics** workflow leaves regular CI unchanged and compares four cases: fresh installation versus local exported-image import, each with the same synthetic .NET graph-build workload running concurrently or completed beforehand. Serial cases build for at least two minutes before provisioning; concurrent cases repeat the same build command until provisioning finishes, so a slow download does not remove contention before installation. Total build iterations can therefore differ; use their timestamps and process samples to confirm actual overlap. It disables remote cache reuse, ensures Ubuntu is unregistered, uses 8 GB in each case, and uploads samples/traces even on step failure. The imported image is prepared before the measured workload; import performs less work than a fresh install.
+
+This synthetic workload is **not the ServiceControl build** and cannot prove its resource-starvation hypothesis. For the decisive comparison in the consuming repository, use the same commit, runner image, memory limit, and build command with `enable-cache: false` in both cases, moving the build wait before setup only in the serial case. Repeat both cases and correlate installation timing with telemetry and WSL traces. An 8 GB WSL limit is not an upfront reservation; masked processor virtualization flags alone do not establish missing virtualization support.
+
+GitHub requires this new manual workflow to be registered on the default branch before it can be dispatched; until then, enable diagnostics in an existing consuming workflow to collect evidence.
+
+The explicit Ubuntu download is a diagnostic experiment to avoid opaque installer-managed download stalls, not a proven root-cause fix or a speed optimization. Store-managed downloads may be faster. Download and local installation timings are logged separately; temporary manifest/image files are removed after success or failure.
+
 ## What it does (Linux)
 
 Nothing. Docker is already available on the runner. Sets `WSL_IP=127.0.0.1` and `WSL_DISTRIBUTION` to empty, so consuming actions can use the same interface unconditionally.
@@ -103,6 +167,7 @@ Nothing. Docker is already available on the runner. Sets `WSL_IP=127.0.0.1` and 
 This action is designed for Particular's CI `setup-*-action` pattern. It is public, but external users should understand it is opinionated for this specific use case.
 
 - **GitHub Actions hosted Windows runners only.** Requires WSL2 with nested virtualization. Will not work on self-hosted runners without WSL2, macOS, or other CI systems.
+- **Fresh Ubuntu installation requires modern WSL with `--install --from-file` support and `curl.exe`.** An unsupported WSL version fails with upgrade guidance rather than silently reverting to the opaque download path. Cache imports and Debian retain their existing installation paths.
 - **Default distribution is Ubuntu.** Distribution images are fetched from each distro's own infrastructure (Ubuntu from `releases.ubuntu.com`, Debian from `salsa.debian.org`), which is outside our control. Debian's WSL artifact on `salsa.debian.org` is currently serving inconsistent bytes and fails `Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST`, so Ubuntu (Canonical's release CDN) is the default and recommended; Debian remains selectable but may be unreliable until upstream is fixed ([microsoft/WSL#41279](https://github.com/microsoft/WSL/issues/41279)). The provisioned distribution is cached via `wsl --export`/`wsl --import` (keyed on the distro image hash from Microsoft's manifest and a hash of `setup.ps1`), so subsequent runs skip the download and the Docker install.
 - **Installs Docker via the distribution's `docker.io` apt package**, not Docker's official repositories. May lag behind official Docker releases.
 - **Pins Docker's bridge subnet to `10.x`.** Docker's defaults (bridge `172.17.0.0/16`, pools up to `172.30.0.0/16`) overlap WSL2's randomly assigned NAT range (`172.16.0.0/12`), intermittently breaking host→container port forwarding when the NAT lands on `172.17.x`. Tools inside the distro that hardcode `172.17.0.0/16` will need updating.

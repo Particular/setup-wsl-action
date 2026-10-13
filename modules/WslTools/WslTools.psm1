@@ -11,10 +11,21 @@ function Invoke-Wsl {
         throw "Invoke-Wsl: -Distribution was not provided and WSL_DISTRIBUTION is not set. Run setup-wsl-action first or pass -Distribution explicitly."
     }
 
-    wsl.exe --distribution $Distribution --user root -- bash -c $Command
-
-    if ($CheckExitCode -and $LASTEXITCODE -ne 0) {
-        throw "WSL command failed with exit code $LASTEXITCODE`: $Command"
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $PSNativeCommandUseErrorActionPreference = $false
+    # Do not log the command: consumers may pass credentials in shell arguments.
+    Write-Host "[$([DateTime]::UtcNow.ToString('o'))] Starting: WSL bash command in $Distribution"
+    try {
+        wsl.exe --distribution $Distribution --user root -- bash -c $Command
+        $exitCode = $LASTEXITCODE
+        Write-Host "Completed: WSL bash command in $Distribution (exit code $exitCode, $($timer.Elapsed.TotalSeconds.ToString('F1'))s)"
+        if ($CheckExitCode -and $exitCode -ne 0) {
+            throw "WSL command failed with exit code $exitCode`: $Command"
+        }
+    }
+    catch {
+        Write-Host "Failed: WSL bash command in $Distribution ($($timer.Elapsed.TotalSeconds.ToString('F1'))s)"
+        throw
     }
 }
 
