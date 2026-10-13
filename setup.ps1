@@ -58,6 +58,12 @@ function Invoke-WslSetupCommand {
     }
 }
 
+function Test-WindowsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 function Assert-WslPrerequisites {
     Write-Host "::group::WSL runner diagnostics and prerequisites"
     try {
@@ -75,10 +81,19 @@ function Assert-WslPrerequisites {
         Write-Host "Completed: Windows build and virtualization diagnostics"
 
         $features = @{}
+        $isAdministrator = Test-WindowsAdministrator
         foreach ($name in @('VirtualMachinePlatform', 'Microsoft-Windows-Subsystem-Linux')) {
+            if (-not $isAdministrator) {
+                $features[$name] = 'Unknown'
+                Write-Host "Windows feature ${name}: Unknown (query requires elevation)"
+                continue
+            }
             Write-Host "Starting: Query Windows feature $name"
             $features[$name] = (Get-WindowsOptionalFeature -Online -FeatureName $name).State.ToString()
             Write-Host "Completed: Query Windows feature $name (state=$($features[$name]))"
+        }
+        if (-not $isAdministrator) {
+            Write-Warning "Windows feature queries require elevation. Validating this existing WSL installation using operational checks instead."
         }
 
         $rebootPending = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
@@ -92,7 +107,7 @@ function Assert-WslPrerequisites {
         if ($features['VirtualMachinePlatform'] -match 'Pending') {
             throw "VirtualMachinePlatform is $($features['VirtualMachinePlatform']). Reboot the runner before provisioning WSL2; this action cannot reboot a running job."
         }
-        if ($features['VirtualMachinePlatform'] -ne 'Enabled') {
+        if ($features['VirtualMachinePlatform'] -notin @('Enabled', 'Unknown')) {
             throw "WSL2 requires the VirtualMachinePlatform Windows feature to be enabled and the runner rebooted before this job. Check runner image $env:ImageOS/$env:ImageVersion."
         }
 
@@ -105,7 +120,7 @@ function Assert-WslPrerequisites {
             if ($features['Microsoft-Windows-Subsystem-Linux'] -match 'Pending') {
                 throw "The inbox WSL feature is $($features['Microsoft-Windows-Subsystem-Linux']). Reboot the runner before provisioning."
             }
-            if ($features['Microsoft-Windows-Subsystem-Linux'] -ne 'Enabled') {
+            if ($features['Microsoft-Windows-Subsystem-Linux'] -notin @('Enabled', 'Unknown')) {
                 throw "WSL --version failed and the inbox WSL feature is not enabled. Preinstall Store/MSI WSL, or enable Microsoft-Windows-Subsystem-Linux and reboot before this job."
             }
         }

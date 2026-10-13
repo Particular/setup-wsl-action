@@ -100,6 +100,8 @@ The `WSL runner diagnostics and prerequisites` log group records the image (`Ima
 
 Virtualization flags can be masked inside hosted virtual machines, so they are diagnostic only. Checked WSL commands and an explicit first boot (`/bin/true`) validate operational readiness.
 
+Windows feature queries require administrator privileges. When running locally without elevation, the action logs those states as unknown and uses operational WSL checks instead, so an already working installation is not rejected just because DISM cannot query its features.
+
 Each provisioning command logs its start and completion, exit code, and elapsed time. For a stuck run, find the last `Starting:` message without a matching completion:
 
 - **Version/status, default version, or distribution enumeration:** investigate the runner image and WSL installation/service.

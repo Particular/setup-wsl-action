@@ -13,6 +13,10 @@ jobs:
   ci:
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os == 'windows-latest' && format('Windows-WSL_Distro:{0}-cache:{1}-attempt:{2}', matrix.wsl_distribution, matrix.cache, matrix.attempt) || 'Linux' }}
+    # Serialize attempts sharing a cache key so the first upload finishes before import verification.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.run_id }}-${{ matrix.os }}-${{ matrix.wsl_distribution }}-${{ matrix.cache }}
+      cancel-in-progress: false
     strategy:
       matrix:
         os: [windows-latest]
