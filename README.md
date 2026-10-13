@@ -154,6 +154,8 @@ The manually dispatched **WSL installation diagnostics** workflow leaves regular
 
 This synthetic workload is **not the ServiceControl build** and cannot prove its resource-starvation hypothesis. For the decisive comparison in the consuming repository, use the same commit, runner image, memory limit, and build command with `enable-cache: false` in both cases, moving the build wait before setup only in the serial case. Repeat both cases and correlate installation timing with telemetry and WSL traces. An 8 GB WSL limit is not an upfront reservation; masked processor virtualization flags alone do not establish missing virtualization support.
 
+GitHub requires this new manual workflow to be registered on the default branch before it can be dispatched; until then, enable diagnostics in an existing consuming workflow to collect evidence.
+
 The explicit Ubuntu download is a diagnostic experiment to avoid opaque installer-managed download stalls, not a proven root-cause fix or a speed optimization. Store-managed downloads may be faster. Download and local installation timings are logged separately; temporary manifest/image files are removed after success or failure.
 
 ## What it does (Linux)
