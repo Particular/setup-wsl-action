@@ -22,6 +22,101 @@ function Export-Output {
     }
 }
 
+function Invoke-WslSetupCommand {
+    param(
+        [string]$Operation,
+        [string[]]$Arguments,
+        [switch]$CaptureOutput,
+        [switch]$AllowFailure
+    )
+
+    # Inspect exit codes ourselves, including the unsupported --version probe on inbox WSL.
+    $PSNativeCommandUseErrorActionPreference = $false
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host "[$([DateTime]::UtcNow.ToString('o'))] Starting: $Operation"
+    try {
+        $output = @()
+        if ($CaptureOutput) {
+            $output = @(wsl.exe @Arguments 2>&1 | ForEach-Object { "$_" -replace "`0", "" })
+        }
+        else {
+            wsl.exe @Arguments 2>&1 | ForEach-Object { "$_" -replace "`0", "" } | Out-Host
+        }
+        $exitCode = $LASTEXITCODE
+        Write-Host "Completed: $Operation (exit code $exitCode, $($timer.Elapsed.TotalSeconds.ToString('F1'))s)"
+        if ($exitCode -ne 0 -and -not $AllowFailure) {
+            $output | Out-Host
+            throw "$Operation failed with exit code $exitCode. See the runner and WSL diagnostics above."
+        }
+        if ($CaptureOutput) {
+            return [pscustomobject]@{ Output = $output; ExitCode = $exitCode }
+        }
+    }
+    catch {
+        Write-Host "Failed: $Operation ($($timer.Elapsed.TotalSeconds.ToString('F1'))s)"
+        throw
+    }
+}
+
+function Assert-WslPrerequisites {
+    Write-Host "::group::WSL runner diagnostics and prerequisites"
+    try {
+        Write-Host "Runner image: $env:ImageOS; version: $env:ImageVersion"
+        Write-Host "Starting: Windows build and virtualization diagnostics"
+        $windows = Get-CimInstance Win32_OperatingSystem
+        $computer = Get-CimInstance Win32_ComputerSystem
+        $processors = Get-CimInstance Win32_Processor
+        Write-Host "Windows: $($windows.Caption); version: $($windows.Version); build: $($windows.BuildNumber)"
+        Write-Host "HypervisorPresent: $($computer.HypervisorPresent)"
+        foreach ($processor in $processors) {
+            # These flags can be masked by a host hypervisor; WSL commands validate usability below.
+            Write-Host "Processor virtualization: firmware=$($processor.VirtualizationFirmwareEnabled); VM monitor extensions=$($processor.VMMonitorModeExtensions); SLAT=$($processor.SecondLevelAddressTranslationExtensions)"
+        }
+        Write-Host "Completed: Windows build and virtualization diagnostics"
+
+        $features = @{}
+        foreach ($name in @('VirtualMachinePlatform', 'Microsoft-Windows-Subsystem-Linux')) {
+            Write-Host "Starting: Query Windows feature $name"
+            $features[$name] = (Get-WindowsOptionalFeature -Online -FeatureName $name).State.ToString()
+            Write-Host "Completed: Query Windows feature $name (state=$($features[$name]))"
+        }
+
+        $rebootPending = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
+            (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
+        Write-Host "Windows servicing/update reboot pending: $rebootPending"
+        if ($rebootPending) {
+            Write-Warning "Windows has a pending servicing/update reboot. This alone does not establish that WSL is unusable."
+        }
+
+        # WSL2 always needs VirtualMachinePlatform, including Store/MSI installations.
+        if ($features['VirtualMachinePlatform'] -match 'Pending') {
+            throw "VirtualMachinePlatform is $($features['VirtualMachinePlatform']). Reboot the runner before provisioning WSL2; this action cannot reboot a running job."
+        }
+        if ($features['VirtualMachinePlatform'] -ne 'Enabled') {
+            throw "WSL2 requires the VirtualMachinePlatform Windows feature to be enabled and the runner rebooted before this job. Check runner image $env:ImageOS/$env:ImageVersion."
+        }
+
+        Get-Command wsl.exe -ErrorAction Stop | Out-Null
+        $version = Invoke-WslSetupCommand -Operation 'Detect WSL version (Store/MSI or inbox)' -Arguments @('--version') -CaptureOutput -AllowFailure
+        $version.Output | Out-Host
+        if ($version.ExitCode -ne 0) {
+            Write-Host "WSL --version is unavailable; checking inbox WSL prerequisites."
+            # Unlike modern Store/MSI WSL2, inbox WSL also needs the legacy WSL feature.
+            if ($features['Microsoft-Windows-Subsystem-Linux'] -match 'Pending') {
+                throw "The inbox WSL feature is $($features['Microsoft-Windows-Subsystem-Linux']). Reboot the runner before provisioning."
+            }
+            if ($features['Microsoft-Windows-Subsystem-Linux'] -ne 'Enabled') {
+                throw "WSL --version failed and the inbox WSL feature is not enabled. Preinstall Store/MSI WSL, or enable Microsoft-Windows-Subsystem-Linux and reboot before this job."
+            }
+        }
+
+        Invoke-WslSetupCommand -Operation 'Check WSL status' -Arguments @('--status')
+    }
+    finally {
+        Write-Host "::endgroup::"
+    }
+}
+
 $runnerOs = $Env:RUNNER_OS ?? "Linux"
 
 if ($runnerOs -eq "Linux") {
@@ -43,6 +138,8 @@ elseif ($runnerOs -eq "Windows") {
     $wslDistribution = $Env:WSL_DISTRIBUTION_OVERRIDE ?? $Distribution
     $wslMemory = $Env:WSL_MEMORY_OVERRIDE ?? $Memory
 
+    Assert-WslPrerequisites
+
     # 1. Constrain the WSL2 VM (memory + prevent idle shutdown).
     #    Only write if the file doesn't exist so local development configs are preserved.
     $wslConfigPath = Join-Path $Env:USERPROFILE ".wslconfig"
@@ -51,13 +148,14 @@ elseif ($runnerOs -eq "Windows") {
         Set-Content -Path $wslConfigPath -Value "[wsl2]`nmemory=$wslMemory`nvmIdleTimeout=-1" -Encoding ASCII
     }
 
-    # 2. Enable WSL2.
-    wsl.exe --set-default-version 2 | Out-Null
+    # 2. Select WSL2 (this does not enable Windows features).
+    Invoke-WslSetupCommand -Operation 'Select WSL2 as the default version' -Arguments @('--set-default-version', '2')
 
     # 3. Install the distribution if it is not already registered.
     Write-Output "::group::Preparing WSL ($wslDistribution)"
 
-    $installedDistributions = ((wsl.exe --list --quiet) -replace "`0", "") |
+    $distributionList = Invoke-WslSetupCommand -Operation 'Enumerate registered distributions' -Arguments @('--list', '--quiet') -CaptureOutput
+    $installedDistributions = $distributionList.Output |
         ForEach-Object { $_.Trim() } |
         Where-Object { $_ -ne "" }
 
@@ -66,10 +164,7 @@ elseif ($runnerOs -eq "Windows") {
             Write-Output "Importing $wslDistribution from cache ($ImportFromCache)"
             $importLocation = Join-Path $env:RUNNER_TEMP "setup-wsl-vhd-$wslDistribution"
             New-Item -ItemType Directory -Force -Path $importLocation | Out-Null
-            wsl.exe --import $wslDistribution $importLocation $ImportFromCache --version 2
-            if ($LASTEXITCODE -ne 0) {
-                throw "Failed to import $wslDistribution from cache"
-            }
+            Invoke-WslSetupCommand -Operation "Import $wslDistribution from cache" -Arguments @('--import', $wslDistribution, $importLocation, $ImportFromCache, '--version', '2')
         }
         else {
             # Distribution images are downloaded from each distro's own infrastructure
@@ -79,15 +174,14 @@ elseif ($runnerOs -eq "Windows") {
             # Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST, so Ubuntu is the default.
             # See https://github.com/microsoft/WSL/issues/41279
             Write-Output "Installing $wslDistribution in WSL"
-            wsl.exe --install $wslDistribution --no-launch
-            if ($LASTEXITCODE -ne 0) {
-                throw "Failed to install $wslDistribution in WSL"
-            }
+            Invoke-WslSetupCommand -Operation "Download and install $wslDistribution" -Arguments @('--install', $wslDistribution, '--no-launch')
         }
     }
     else {
         Write-Output "$wslDistribution is already installed"
     }
+
+    Invoke-WslSetupCommand -Operation "First boot of $wslDistribution (WSL2 virtualization check)" -Arguments @('--distribution', $wslDistribution, '--user', 'root', '--exec', '/bin/true')
 
     # 4. Ensure Docker is installed inside the WSL distribution.
     Write-Output "Ensuring Docker is installed inside $wslDistribution"
@@ -132,18 +226,12 @@ elseif ($runnerOs -eq "Windows") {
     # 9. Export the provisioned distribution to the cache tar (fresh-install path only).
     if ($ExportToCache -and -not (Test-Path $ExportToCache)) {
         Write-Output "Exporting $wslDistribution to cache ($ExportToCache)"
-        wsl.exe --terminate $wslDistribution
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to terminate $wslDistribution before export"
-        }
+        Invoke-WslSetupCommand -Operation "Terminate $wslDistribution before cache export" -Arguments @('--terminate', $wslDistribution)
         $exportDir = Split-Path $ExportToCache -Parent
         if (-not (Test-Path $exportDir)) {
             New-Item -ItemType Directory -Force -Path $exportDir | Out-Null
         }
-        wsl.exe --export $wslDistribution $ExportToCache
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to export $wslDistribution to cache"
-        }
+        Invoke-WslSetupCommand -Operation "Export $wslDistribution to cache" -Arguments @('--export', $wslDistribution, $ExportToCache)
     }
 
     # 10. Keep the WSL instance alive for the rest of the job.
@@ -153,15 +241,13 @@ elseif ($runnerOs -eq "Windows") {
     #    the VM-level idle timeout; this covers the separate instance-level shutdown.
     Write-Output "Starting a D-Bus session to keep the WSL instance alive for the job"
     Invoke-Wsl -Distribution $wslDistribution -CheckExitCode -Command "command -v dbus-launch >/dev/null 2>&1 || { apt-get update && apt-get install -y dbus-x11; }; command -v dbus-launch >/dev/null 2>&1 || { echo 'dbus-launch is unavailable after installing dbus-x11' >&2; exit 1; }"
-    wsl.exe --distribution $wslDistribution --user root --exec /usr/bin/dbus-launch true
-    if ($LASTEXITCODE -ne 0) {
-        throw "dbus-launch keep-alive failed with exit code $LASTEXITCODE"
-    }
+    Invoke-WslSetupCommand -Operation "Start D-Bus keep-alive in $wslDistribution" -Arguments @('--distribution', $wslDistribution, '--user', 'root', '--exec', '/usr/bin/dbus-launch', 'true')
 
     Write-Output "::endgroup::"
 
     # 11. Detect the WSL VM gateway IPv4 address.
-    $wslIp = ((wsl.exe --distribution $wslDistribution --user root -- hostname -I) -replace "`0", "").Trim().Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries) |
+    $address = Invoke-WslSetupCommand -Operation "Detect $wslDistribution IPv4 address" -Arguments @('--distribution', $wslDistribution, '--user', 'root', '--', 'hostname', '-I') -CaptureOutput
+    $wslIp = ($address.Output -join ' ').Trim().Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries) |
         Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } |
         Select-Object -First 1
 

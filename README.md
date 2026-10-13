@@ -81,7 +81,7 @@ The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D
 ## What it does (Windows)
 
 1. Writes `%USERPROFILE%\.wslconfig` with `[wsl2]` + `memory=<N>GB` + `vmIdleTimeout=-1`. This constrains the VM and prevents idle shutdown. Only writes if the file doesn't exist (local dev configs are preserved).
-2. Enables WSL2 (`wsl --set-default-version 2`).
+2. Logs runner image, Windows build, virtualization indicators, Windows feature states, and WSL version/status. Validates WSL2 prerequisites, then selects WSL2 (`wsl --set-default-version 2`); selecting the default does not enable Windows features.
 3. Installs the distribution if not already registered (`wsl --install Ubuntu --no-launch`).
 4. Installs Docker inside the distribution (`apt-get install docker.io`).
 5. Pins Docker's bridge and network pools to `10.x` via `/etc/docker/daemon.json`, so they can't overlap WSL2's randomly assigned NAT subnet (`172.16.0.0/12`).
@@ -93,6 +93,22 @@ The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D
 ### Caching
 
 The action caches a `wsl --export` tar of the fully-provisioned distribution (Docker included) keyed on `setup-wsl-<distro>-distro<distroImageSha256[:16]>-setup<sha256(setup.ps1)[:16]>`. The distro image hash comes from Microsoft's [`DistributionInfo.json`](https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json), the same manifest `wsl --install` resolves against, so the cache refreshes automatically when a new distro image is published. This keeps the base image current for security updates. On a cache hit it imports the tar with `wsl --import`, skipping the download and the Docker install. The cache is subject to the 10 GB per-repository GitHub Actions limit (LRU + weekly eviction). Disable with `enable-cache: false`.
+
+### Troubleshooting provisioning hangs
+
+The `WSL runner diagnostics and prerequisites` log group records the image (`ImageOS`/`ImageVersion`), Windows build, exposed virtualization flags, feature states, and WSL version/status. WSL2 requires `VirtualMachinePlatform` to be enabled. Inbox WSL additionally requires `Microsoft-Windows-Subsystem-Linux`; modern Store/MSI WSL2 does not require that legacy feature. Required features in a pending state fail with reboot guidance. The action does not enable features or reboot the runner during a job. General Windows servicing/update reboot markers produce a warning, not an automatic rejection.
+
+Virtualization flags can be masked inside hosted virtual machines, so they are diagnostic only. Checked WSL commands and an explicit first boot (`/bin/true`) validate operational readiness.
+
+Each provisioning command logs its start and completion, exit code, and elapsed time. For a stuck run, find the last `Starting:` message without a matching completion:
+
+- **Version/status, default version, or distribution enumeration:** investigate the runner image and WSL installation/service.
+- **Download and install:** investigate the distribution source or WSL installer.
+- **Import from cache:** investigate the cached image and WSL import/storage path.
+- **First boot:** investigate WSL2 VM startup and nested virtualization.
+- **A WSL bash command:** use the preceding setup phase message to distinguish package installation, Docker startup, and other Linux-side operations.
+
+Compare affected and successful runs by image and WSL version before changing installation behavior. A job timeout is a safety net, not a root-cause fix. CI repeats both distribution/cache combinations on Windows and unregisters provisioned distributions in cached jobs to verify an actual cache import, rather than reusing an already registered distribution.
 
 ## What it does (Linux)
 
