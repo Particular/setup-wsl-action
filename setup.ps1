@@ -93,7 +93,8 @@ function Save-WslDownload {
 function Install-UbuntuFromImage {
     param([string]$Name)
 
-    $help = Invoke-WslSetupCommand -Operation 'Check local-image installation support' -Arguments @('--help') -CaptureOutput
+    # WSL can return -1 even when it successfully prints help; inspect the supported option instead.
+    $help = Invoke-WslSetupCommand -Operation 'Check local-image installation support' -Arguments @('--help') -CaptureOutput -AllowFailure
     if (($help.Output -join "`n") -notmatch '--from-file') {
         throw "Fresh Ubuntu installation requires WSL with --install --from-file support. Update WSL on the runner before this job."
     }
