@@ -82,7 +82,7 @@ The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D
 
 1. Writes `%USERPROFILE%\.wslconfig` with `[wsl2]` + `memory=<N>GB` + `vmIdleTimeout=-1`. This constrains the VM and prevents idle shutdown. Only writes if the file doesn't exist (local dev configs are preserved).
 2. Logs runner image, Windows build, virtualization indicators, Windows feature states, and WSL version/status. Validates WSL2 prerequisites, then selects WSL2 (`wsl --set-default-version 2`); selecting the default does not enable Windows features.
-3. Installs the distribution if not already registered (`wsl --install Ubuntu --no-launch`).
+3. Installs the distribution if not already registered. For Ubuntu, resolves the image URL and SHA-256 from Microsoft's manifest, downloads and verifies the image, then installs it with `wsl --install --from-file <image.wsl> --name Ubuntu --no-launch`. Debian retains `wsl --install Debian --no-launch`; cache hits retain `wsl --import`.
 4. Installs Docker inside the distribution (`apt-get install docker.io`).
 5. Pins Docker's bridge and network pools to `10.x` via `/etc/docker/daemon.json`, so they can't overlap WSL2's randomly assigned NAT subnet (`172.16.0.0/12`).
 6. Starts the Docker daemon (systemd or SysV service), restarting if systemd already started it at VM boot so the pinned subnets are applied.
@@ -105,12 +105,17 @@ Windows feature queries require administrator privileges. When running locally w
 Each provisioning command logs its start and completion, exit code, and elapsed time. For a stuck run, find the last `Starting:` message without a matching completion:
 
 - **Version/status, default version, or distribution enumeration:** investigate the runner image and WSL installation/service.
-- **Download and install:** investigate the distribution source or WSL installer.
+- **Resolve Ubuntu image manifest / Download Ubuntu image:** investigate GitHub's manifest endpoint or Ubuntu's image source. Downloads use the hosted runner's `curl.exe` progress meter, three attempts with five-second delays, a 30-second connection timeout, and a 60-second low-speed limit (below 1 KiB/s). Each manifest attempt is capped at 60 seconds; each image attempt at 10 minutes. Failed attempts discard partial files.
+- **Verify Ubuntu image SHA-256:** a mismatch fails before installation; investigate the upstream artifact or manifest.
+- **Install from verified local Ubuntu image:** downloading and verification have already completed; investigate the local WSL installer.
+- **Download and install Debian:** investigate Debian's distribution source or WSL installer.
 - **Import from cache:** investigate the cached image and WSL import/storage path.
 - **First boot:** investigate WSL2 VM startup and nested virtualization.
 - **A WSL bash command:** use the preceding setup phase message to distinguish package installation, Docker startup, and other Linux-side operations.
 
 Compare affected and successful runs by image and WSL version before changing installation behavior. A job timeout is a safety net, not a root-cause fix. CI covers Ubuntu and Debian on Windows with caching enabled and disabled, plus the Linux no-op path. One additional Ubuntu job provisions with caching enabled, unregisters the distribution, then runs setup again and requires a cache hit before verifying Docker, Compose, and the bridge subnet.
+
+The explicit Ubuntu download is a diagnostic experiment to avoid opaque installer-managed download stalls, not a proven root-cause fix or a speed optimization. Store-managed downloads may be faster. Download and local installation timings are logged separately; temporary manifest/image files are removed after success or failure.
 
 ## What it does (Linux)
 
@@ -121,6 +126,7 @@ Nothing. Docker is already available on the runner. Sets `WSL_IP=127.0.0.1` and 
 This action is designed for Particular's CI `setup-*-action` pattern. It is public, but external users should understand it is opinionated for this specific use case.
 
 - **GitHub Actions hosted Windows runners only.** Requires WSL2 with nested virtualization. Will not work on self-hosted runners without WSL2, macOS, or other CI systems.
+- **Fresh Ubuntu installation requires modern WSL with `--install --from-file` support and `curl.exe`.** An unsupported WSL version fails with upgrade guidance rather than silently reverting to the opaque download path. Cache imports and Debian retain their existing installation paths.
 - **Default distribution is Ubuntu.** Distribution images are fetched from each distro's own infrastructure (Ubuntu from `releases.ubuntu.com`, Debian from `salsa.debian.org`), which is outside our control. Debian's WSL artifact on `salsa.debian.org` is currently serving inconsistent bytes and fails `Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST`, so Ubuntu (Canonical's release CDN) is the default and recommended; Debian remains selectable but may be unreliable until upstream is fixed ([microsoft/WSL#41279](https://github.com/microsoft/WSL/issues/41279)). The provisioned distribution is cached via `wsl --export`/`wsl --import` (keyed on the distro image hash from Microsoft's manifest and a hash of `setup.ps1`), so subsequent runs skip the download and the Docker install.
 - **Installs Docker via the distribution's `docker.io` apt package**, not Docker's official repositories. May lag behind official Docker releases.
 - **Pins Docker's bridge subnet to `10.x`.** Docker's defaults (bridge `172.17.0.0/16`, pools up to `172.30.0.0/16`) overlap WSL2's randomly assigned NAT range (`172.16.0.0/12`), intermittently breaking host→container port forwarding when the NAT lands on `172.17.x`. Tools inside the distro that hardcode `172.17.0.0/16` will need updating.

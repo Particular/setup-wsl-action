@@ -58,6 +58,85 @@ function Invoke-WslSetupCommand {
     }
 }
 
+function Save-WslDownload {
+    param(
+        [string]$Uri,
+        [string]$Destination,
+        [string]$Operation,
+        [int]$TimeoutSeconds = 600
+    )
+
+    $PSNativeCommandUseErrorActionPreference = $false
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host "[$([DateTime]::UtcNow.ToString('o'))] Starting: $Operation ($Uri)"
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        Write-Host "$Operation — download attempt $attempt/3"
+        # curl.exe is included on hosted Windows runners. Its progress meter stays on stderr.
+        curl.exe --fail --location --proto '=https' --proto-redir '=https' `
+            --connect-timeout 30 --max-time $TimeoutSeconds --speed-limit 1024 --speed-time 60 `
+            --output $Destination --url $Uri
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0) {
+            Write-Host "Completed: $Operation ($((Get-Item -LiteralPath $Destination).Length) bytes, $($timer.Elapsed.TotalSeconds.ToString('F1'))s)"
+            return
+        }
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        if ($attempt -eq 3) {
+            throw "$Operation failed after 3 attempts (curl exit code $exitCode, $($timer.Elapsed.TotalSeconds.ToString('F1'))s)."
+        }
+        Write-Warning "$Operation failed with curl exit code $exitCode; retrying in 5 seconds."
+        Start-Sleep -Seconds 5
+    }
+}
+
+function Install-UbuntuFromImage {
+    param([string]$Name)
+
+    $help = Invoke-WslSetupCommand -Operation 'Check local-image installation support' -Arguments @('--help') -CaptureOutput
+    if (($help.Output -join "`n") -notmatch '--from-file') {
+        throw "Fresh Ubuntu installation requires WSL with --install --from-file support. Update WSL on the runner before this job."
+    }
+    $downloadDirectory = Join-Path ($env:RUNNER_TEMP ?? [IO.Path]::GetTempPath()) "setup-wsl-download-$([Guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
+    try {
+        $manifestPath = Join-Path $downloadDirectory 'DistributionInfo.json'
+        Save-WslDownload -Operation 'Resolve Ubuntu image manifest' `
+            -Uri 'https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json' `
+            -Destination $manifestPath -TimeoutSeconds 60
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $entries = @($manifest.ModernDistributions.PSObject.Properties | ForEach-Object { $_.Value } |
+            Where-Object { $_.Name -eq 'Ubuntu' })
+        if ($entries.Count -ne 1) {
+            throw "Expected one Ubuntu entry in Microsoft's modern WSL distribution manifest, found $($entries.Count)."
+        }
+        $architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        $image = switch ($architecture) {
+            'X64' { $entries[0].Amd64Url }
+            'Arm64' { $entries[0].Arm64Url }
+            default { throw "Unsupported Windows architecture for Ubuntu: $architecture" }
+        }
+        $imageUri = $null
+        if (-not [Uri]::TryCreate($image.Url, [UriKind]::Absolute, [ref]$imageUri) -or
+            $imageUri.Scheme -ne 'https' -or $image.Sha256 -notmatch '^[a-fA-F0-9]{64}$') {
+            throw "Ubuntu image metadata must contain an HTTPS URL and a valid SHA-256 checksum for $architecture."
+        }
+        $imagePath = Join-Path $downloadDirectory 'Ubuntu.wsl'
+        Save-WslDownload -Operation "Download Ubuntu image ($architecture)" -Uri $imageUri.AbsoluteUri -Destination $imagePath
+        Write-Host "Starting: Verify Ubuntu image SHA-256"
+        $actualHash = (Get-FileHash -LiteralPath $imagePath -Algorithm SHA256).Hash
+        if ($actualHash -ne $image.Sha256) {
+            throw "Ubuntu image SHA-256 mismatch: expected $($image.Sha256), got $actualHash. The downloaded image will not be installed."
+        }
+        Write-Host "Completed: Verify Ubuntu image SHA-256 ($actualHash)"
+        Invoke-WslSetupCommand -Operation "Install $Name from verified local Ubuntu image" `
+            -Arguments @('--install', '--from-file', $imagePath, '--name', $Name, '--no-launch')
+    }
+    finally {
+        Remove-Item -LiteralPath $downloadDirectory -Recurse -Force
+    }
+}
+
 function Test-WindowsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -181,10 +260,11 @@ elseif ($runnerOs -eq "Windows") {
             New-Item -ItemType Directory -Force -Path $importLocation | Out-Null
             Invoke-WslSetupCommand -Operation "Import $wslDistribution from cache" -Arguments @('--import', $wslDistribution, $importLocation, $ImportFromCache, '--version', '2')
         }
+        elseif ($wslDistribution -eq 'Ubuntu') {
+            Install-UbuntuFromImage -Name $wslDistribution
+        }
         else {
-            # Distribution images are downloaded from each distro's own infrastructure
-            # (Ubuntu from releases.ubuntu.com, Debian from salsa.debian.org), which is outside
-            # our control. Uses the service-managed install (no --web-download). Debian's WSL
+            # Debian retains the service-managed install (no --web-download). Its WSL
             # artifact on salsa.debian.org is currently serving inconsistent bytes and fails
             # Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST, so Ubuntu is the default.
             # See https://github.com/microsoft/WSL/issues/41279
