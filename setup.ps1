@@ -27,7 +27,8 @@ function Invoke-WslSetupCommand {
         [string]$Operation,
         [string[]]$Arguments,
         [switch]$CaptureOutput,
-        [switch]$AllowFailure
+        [switch]$AllowFailure,
+        [switch]$Monitor
     )
 
     # Inspect exit codes ourselves, including the unsupported --version probe on inbox WSL.
@@ -36,13 +37,31 @@ function Invoke-WslSetupCommand {
     Write-Host "[$([DateTime]::UtcNow.ToString('o'))] Starting: $Operation"
     try {
         $output = @()
-        if ($CaptureOutput) {
+        $diagnosticsAvailable = $false
+        if ($Monitor -and $env:SETUP_WSL_DIAGNOSTICS -eq 'true') {
+            try {
+                Import-Module (Join-Path $PSScriptRoot 'modules/WslDiagnostics') -ErrorAction Stop
+                Get-Command Start-ThreadJob -ErrorAction Stop | Out-Null
+                $diagnosticsAvailable = $true
+            }
+            catch {
+                Write-Host "WSL diagnostics unavailable; using synchronous execution: $($_.Exception.Message)"
+            }
+        }
+        if ($diagnosticsAvailable) {
+            $result = Invoke-WslMonitoredCommand -Operation $Operation -Arguments $Arguments -CaptureOutput:$CaptureOutput
+            $output = $result.Output
+            $exitCode = $result.ExitCode
+            $global:LASTEXITCODE = $exitCode
+        }
+        elseif ($CaptureOutput) {
             $output = @(wsl.exe @Arguments 2>&1 | ForEach-Object { "$_" -replace "`0", "" })
+            $exitCode = $LASTEXITCODE
         }
         else {
             wsl.exe @Arguments 2>&1 | ForEach-Object { "$_" -replace "`0", "" } | Out-Host
+            $exitCode = $LASTEXITCODE
         }
-        $exitCode = $LASTEXITCODE
         Write-Host "Completed: $Operation (exit code $exitCode, $($timer.Elapsed.TotalSeconds.ToString('F1'))s)"
         if ($exitCode -ne 0 -and -not $AllowFailure) {
             $output | Out-Host
@@ -131,7 +150,7 @@ function Install-UbuntuFromImage {
         }
         Write-Host "Completed: Verify Ubuntu image SHA-256 ($actualHash)"
         Invoke-WslSetupCommand -Operation "Install $Name from verified local Ubuntu image" `
-            -Arguments @('--install', '--from-file', $imagePath, '--name', $Name, '--no-launch')
+            -Arguments @('--install', '--from-file', $imagePath, '--name', $Name, '--no-launch') -Monitor
     }
     finally {
         Remove-Item -LiteralPath $downloadDirectory -Recurse -Force
@@ -229,6 +248,24 @@ if ($runnerOs -eq "Linux") {
 elseif ($runnerOs -eq "Windows") {
     Write-Output "Windows runner — provisioning WSL2 with Docker"
 
+    if ($env:SETUP_WSL_DIAGNOSTICS -eq 'true') {
+        $env:SETUP_WSL_DIAGNOSTICS_CLEANUP_PATH = Join-Path $PSScriptRoot 'diagnostics/Stop-WslDiagnostics.ps1'
+        if ($env:RUNNER_TEMP) {
+            $env:SETUP_WSL_DIAGNOSTICS_PATH = Join-Path $env:RUNNER_TEMP 'setup-wsl-diagnostics'
+        }
+        if ($env:GITHUB_ENV) {
+            try {
+                Export-Env -Name 'SETUP_WSL_DIAGNOSTICS_CLEANUP_PATH' -Value $env:SETUP_WSL_DIAGNOSTICS_CLEANUP_PATH
+                if ($env:SETUP_WSL_DIAGNOSTICS_PATH) {
+                    Export-Env -Name 'SETUP_WSL_DIAGNOSTICS_PATH' -Value $env:SETUP_WSL_DIAGNOSTICS_PATH
+                }
+            }
+            catch {
+                Write-Host "WSL diagnostics: could not export cleanup path ($($_.Exception.Message))"
+            }
+        }
+    }
+
     # Override via environment variables for consistency with existing actions.
     $wslDistribution = $Env:WSL_DISTRIBUTION_OVERRIDE ?? $Distribution
     $wslMemory = $Env:WSL_MEMORY_OVERRIDE ?? $Memory
@@ -259,7 +296,7 @@ elseif ($runnerOs -eq "Windows") {
             Write-Output "Importing $wslDistribution from cache ($ImportFromCache)"
             $importLocation = Join-Path $env:RUNNER_TEMP "setup-wsl-vhd-$wslDistribution"
             New-Item -ItemType Directory -Force -Path $importLocation | Out-Null
-            Invoke-WslSetupCommand -Operation "Import $wslDistribution from cache" -Arguments @('--import', $wslDistribution, $importLocation, $ImportFromCache, '--version', '2')
+            Invoke-WslSetupCommand -Operation "Import $wslDistribution from cache" -Arguments @('--import', $wslDistribution, $importLocation, $ImportFromCache, '--version', '2') -Monitor
         }
         elseif ($wslDistribution -eq 'Ubuntu') {
             Install-UbuntuFromImage -Name $wslDistribution
@@ -270,14 +307,14 @@ elseif ($runnerOs -eq "Windows") {
             # Wsl/InstallDistro/VerifyChecksum/TRUST_E_BAD_DIGEST, so Ubuntu is the default.
             # See https://github.com/microsoft/WSL/issues/41279
             Write-Output "Installing $wslDistribution in WSL"
-            Invoke-WslSetupCommand -Operation "Download and install $wslDistribution" -Arguments @('--install', $wslDistribution, '--no-launch')
+            Invoke-WslSetupCommand -Operation "Download and install $wslDistribution" -Arguments @('--install', $wslDistribution, '--no-launch') -Monitor
         }
     }
     else {
         Write-Output "$wslDistribution is already installed"
     }
 
-    Invoke-WslSetupCommand -Operation "First boot of $wslDistribution (WSL2 virtualization check)" -Arguments @('--distribution', $wslDistribution, '--user', 'root', '--exec', '/bin/true')
+    Invoke-WslSetupCommand -Operation "First boot of $wslDistribution (WSL2 virtualization check)" -Arguments @('--distribution', $wslDistribution, '--user', 'root', '--exec', '/bin/true') -Monitor
 
     # 4. Ensure Docker is installed inside the WSL distribution.
     Write-Output "Ensuring Docker is installed inside $wslDistribution"

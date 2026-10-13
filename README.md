@@ -115,6 +115,45 @@ Each provisioning command logs its start and completion, exit code, and elapsed 
 
 Compare affected and successful runs by image and WSL version before changing installation behavior. A job timeout is a safety net, not a root-cause fix. CI covers Ubuntu and Debian on Windows with caching enabled and disabled, plus the Linux no-op path. One additional Ubuntu job provisions with caching enabled, unregisters the distribution, then runs setup again and requires a cache hit before verifying Docker, Compose, and the bridge subnet.
 
+### Diagnosing local installation stalls and resource contention
+
+Set `SETUP_WSL_DIAGNOSTICS: 'true'` on the setup action's step to enable diagnostics around distribution installation, cache import, and explicit first boot. Downloads and their flags are unchanged. With diagnostics disabled (the default), provisioning retains its existing synchronous execution path.
+
+The diagnostic mode periodically logs host CPU utilization, available/committed memory, disk I/O and free space, and selected WSL/VM and .NET build processes. Process CPU is cumulative, so compare consecutive samples; command lines and environment variables are not collected. Samples and operation timestamps are also saved under `${{ runner.temp }}/setup-wsl-diagnostics`.
+
+On elevated Windows runners it additionally records a narrow WSL/VM-compute ETW trace, using circular files capped at 128 MB per operation. This starts before installation/import/first boot so an early stall is captured, rather than waiting for a presumed timeout. Collection failures warn without failing provisioning. Traces are stopped when the monitored command finishes, but a runner-enforced step timeout can bypass cleanup. Add the following **separate steps after setup** to stop any interrupted action-owned traces and upload the files:
+
+```yaml
+- name: Setup WSL with diagnostics
+  id: wsl
+  uses: Particular/setup-wsl-action@v1
+  env:
+    SETUP_WSL_DIAGNOSTICS: 'true'
+  with:
+    memory: 8GB
+    enable-cache: false
+- name: Stop interrupted traces
+  if: always() && runner.os == 'Windows'
+  shell: pwsh
+  run: |
+    if ($env:SETUP_WSL_DIAGNOSTICS_CLEANUP_PATH) {
+      & $env:SETUP_WSL_DIAGNOSTICS_CLEANUP_PATH
+    }
+- name: Upload WSL diagnostics
+  if: always() && runner.os == 'Windows'
+  uses: actions/upload-artifact@v7.0.2
+  with:
+    name: wsl-diagnostics
+    path: ${{ env.SETUP_WSL_DIAGNOSTICS_PATH }}
+    retention-days: 7
+```
+
+Diagnostic mode exports `SETUP_WSL_DIAGNOSTICS_CLEANUP_PATH` and `SETUP_WSL_DIAGNOSTICS_PATH` before provisioning, so the later cleanup and upload steps do not depend on a successful setup and use the original directory even if setup overrides `RUNNER_TEMP`. Hard job cancellation or runner loss may prevent even `always()` steps from executing; this cannot guarantee trace recovery. Diagnostic artifacts can contain paths and WSL error details: review them before sharing, and do not publish unredacted traces externally.
+
+The manually dispatched **WSL installation diagnostics** workflow leaves regular CI unchanged and compares four cases: fresh installation versus local exported-image import, each with the same synthetic .NET graph-build workload running concurrently or completed beforehand. Serial cases build for at least two minutes before provisioning; concurrent cases repeat the same build command until provisioning finishes, so a slow download does not remove contention before installation. Total build iterations can therefore differ; use their timestamps and process samples to confirm actual overlap. It disables remote cache reuse, ensures Ubuntu is unregistered, uses 8 GB in each case, and uploads samples/traces even on step failure. The imported image is prepared before the measured workload; import performs less work than a fresh install.
+
+This synthetic workload is **not the ServiceControl build** and cannot prove its resource-starvation hypothesis. For the decisive comparison in the consuming repository, use the same commit, runner image, memory limit, and build command with `enable-cache: false` in both cases, moving the build wait before setup only in the serial case. Repeat both cases and correlate installation timing with telemetry and WSL traces. An 8 GB WSL limit is not an upfront reservation; masked processor virtualization flags alone do not establish missing virtualization support.
+
 The explicit Ubuntu download is a diagnostic experiment to avoid opaque installer-managed download stalls, not a proven root-cause fix or a speed optimization. Store-managed downloads may be faster. Download and local installation timings are logged separately; temporary manifest/image files are removed after success or failure.
 
 ## What it does (Linux)

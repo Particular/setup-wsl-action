@@ -1,0 +1,118 @@
+name: WSL installation diagnostics
+on:
+  workflow_dispatch:
+jobs:
+  compare:
+    name: Ubuntu-${{ matrix.provisioning }}-build-${{ matrix.build }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        provisioning: [install, import]
+        build: [concurrent, completed]
+    env:
+      SETUP_WSL_DIAGNOSTICS: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Prepare identical .NET build workload
+        shell: pwsh
+        run: |
+          $workload = Join-Path $env:RUNNER_TEMP 'wsl-build-workload'
+          dotnet new sln --name Workload --output $workload --format sln
+          if ($LASTEXITCODE -ne 0) { throw "Failed to scaffold build solution" }
+          1..24 | ForEach-Object {
+            $project = Join-Path $workload "Project$_"
+            dotnet new classlib --name "Project$_" --output $project --no-restore
+            if ($LASTEXITCODE -ne 0) { throw "Failed to scaffold build project $_" }
+            dotnet sln "$workload/Workload.sln" add "$project/Project$_.csproj"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to add build project $_" }
+          }
+          dotnet restore "$workload/Workload.sln"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to restore build workload" }
+      - name: Ensure Ubuntu is unregistered
+        shell: pwsh
+        run: |
+          $distributions = (wsl.exe --list --quiet) -replace "`0", ""
+          if ($LASTEXITCODE -ne 0) { throw "Failed to enumerate distributions" }
+          if (@($distributions | ForEach-Object { $_.Trim() }) -contains 'Ubuntu') {
+            wsl.exe --unregister Ubuntu
+            if ($LASTEXITCODE -ne 0) { throw "Failed to unregister Ubuntu" }
+          }
+      - name: Prepare local cache image for import comparison
+        if: matrix.provisioning == 'import'
+        shell: pwsh
+        env:
+          SETUP_WSL_DIAGNOSTICS: 'false'
+        run: |
+          & "$env:GITHUB_WORKSPACE/setup.ps1" -Distribution Ubuntu -Memory 8GB -ExportToCache "$env:RUNNER_TEMP/ubuntu-comparison.tar"
+          wsl.exe --unregister Ubuntu
+          if ($LASTEXITCODE -ne 0) { throw "Failed to unregister seeded Ubuntu" }
+      - name: Compare build and provisioning without remote cache reuse
+        shell: pwsh
+        timeout-minutes: 10
+        env:
+          PROVISIONING: ${{ matrix.provisioning }}
+          BUILD_MODE: ${{ matrix.build }}
+        run: |
+          Write-Host "Comparison: provisioning=$env:PROVISIONING; build=$env:BUILD_MODE"
+          $stopBuild = Join-Path $env:RUNNER_TEMP "stop-wsl-build-$([Guid]::NewGuid())"
+          $build = Start-Job -ArgumentList $env:BUILD_MODE, $stopBuild -ScriptBlock {
+            param($Mode, $StopFile)
+            $ErrorActionPreference = 'Stop'
+            $directory = Join-Path $env:RUNNER_TEMP 'setup-wsl-diagnostics'
+            New-Item -ItemType Directory -Path $directory -Force | Out-Null
+            $log = Join-Path $directory 'build.log'
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            $iteration = 0
+            # This synthetic workload is identical in all four cases, not the ServiceControl build.
+            do {
+              $iteration++
+              "[$([DateTime]::UtcNow.ToString('o'))] Starting build iteration $iteration" | Tee-Object -FilePath $log -Append
+              dotnet build "$env:RUNNER_TEMP/wsl-build-workload/Workload.sln" --configuration Release --no-restore -graph -t:Rebuild 2>&1 |
+                Tee-Object -FilePath $log -Append
+              if ($LASTEXITCODE -ne 0) { throw "Build iteration $iteration failed" }
+              "[$([DateTime]::UtcNow.ToString('o'))] Completed build iteration $iteration" | Tee-Object -FilePath $log -Append
+            } while (($Mode -eq 'completed' -and $timer.Elapsed.TotalSeconds -lt 120) -or
+                     ($Mode -eq 'concurrent' -and -not (Test-Path -LiteralPath $StopFile)))
+          }
+          try {
+            if ($env:BUILD_MODE -eq 'completed') {
+              $build | Wait-Job -Timeout 300 | Out-Null
+              if ($build.State -ne 'Completed') { throw "Build did not complete successfully before provisioning" }
+              $build | Receive-Job -ErrorAction Stop
+            }
+            if ($env:PROVISIONING -eq 'import') {
+              & "$env:GITHUB_WORKSPACE/setup.ps1" -Distribution Ubuntu -Memory 8GB -ImportFromCache "$env:RUNNER_TEMP/ubuntu-comparison.tar"
+            }
+            else {
+              & "$env:GITHUB_WORKSPACE/setup.ps1" -Distribution Ubuntu -Memory 8GB
+            }
+            Import-Module "$env:GITHUB_WORKSPACE/modules/WslTools"
+            Invoke-Wsl -Distribution Ubuntu -CheckExitCode -Command "docker info --format '{{.ServerVersion}}'"
+            if ($env:BUILD_MODE -eq 'concurrent') {
+              New-Item -ItemType File -Path $stopBuild -Force | Out-Null
+              $build | Wait-Job -Timeout 300 | Out-Null
+              if ($build.State -ne 'Completed') { throw "Concurrent build did not complete successfully" }
+              $build | Receive-Job -ErrorAction Stop
+            }
+          }
+          finally {
+            $build | Stop-Job
+            $build | Remove-Job -Force
+            Remove-Item -LiteralPath $stopBuild -Force -ErrorAction SilentlyContinue
+          }
+      - name: Stop interrupted diagnostic traces
+        if: always()
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE/diagnostics/Stop-WslDiagnostics.ps1"
+      - name: Upload diagnostic samples and traces
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: wsl-${{ matrix.provisioning }}-build-${{ matrix.build }}
+          path: ${{ runner.temp }}/setup-wsl-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
