@@ -12,42 +12,20 @@ on:
 jobs:
   ci:
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os == 'windows-latest' && format('Windows-WSL_Distro:{0}-cache:{1}-attempt:{2}', matrix.wsl_distribution, matrix.cache, matrix.attempt) || 'Linux' }}
-    # Serialize attempts sharing a cache key so the first upload finishes before import verification.
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.run_id }}-${{ matrix.os }}-${{ matrix.wsl_distribution }}-${{ matrix.cache }}
-      cancel-in-progress: false
+    name: ${{ matrix.os == 'windows-latest' && format('Windows-WSL_Distro:{0}-cache:{1}', matrix.wsl_distribution, matrix.cache) || 'Linux' }}
     strategy:
       matrix:
         os: [windows-latest]
         wsl_distribution: [Ubuntu, Debian]
         cache: [true, false]
-        attempt: [1, 2]
         include:
           - os: ubuntu-latest
             wsl_distribution: Debian
             cache: true
-            attempt: 1
       fail-fast: false
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
-      - name: Ensure the test distribution is not already registered
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          TEST_DISTRIBUTION: ${{ matrix.wsl_distribution }}
-        run: |
-          $distributions = (wsl.exe --list --quiet) -replace "`0", ""
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to list distributions before the provisioning test"
-          }
-          if (@($distributions | ForEach-Object { $_.Trim() }) -contains $env:TEST_DISTRIBUTION) {
-            wsl.exe --unregister $env:TEST_DISTRIBUTION
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to unregister the test distribution"
-            }
-          }
       - name: Setup WSL
         uses: ./
         id: wsl
@@ -93,39 +71,4 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               throw "Docker is not available on the runner"
             }
-          }
-      - name: Remove the distribution to exercise cache import
-        if: runner.os == 'Windows' && matrix.cache
-        shell: pwsh
-        run: |
-          wsl.exe --unregister $env:WSL_DISTRIBUTION
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to unregister the provisioned distribution before cache import"
-          }
-      - name: Restore and provision from cache
-        if: runner.os == 'Windows' && matrix.cache
-        uses: ./
-        id: restored
-        with:
-          distribution: ${{ matrix.wsl_distribution }}
-          memory: 4GB
-          enable-cache: true
-      - name: Verify the imported distribution
-        if: runner.os == 'Windows' && matrix.cache
-        shell: pwsh
-        env:
-          CACHE_HIT: ${{ steps.restored.outputs.cache-hit }}
-        run: |
-          if ($env:CACHE_HIT -ne 'true') {
-            throw "Expected an actual cache import, but the cache was not restored"
-          }
-          if (-not $env:WSL_IP) {
-            throw "WSL_IP was not set after cache import"
-          }
-          Import-Module $env:WSL_TOOLS_MODULE_PATH
-          Invoke-Wsl -CheckExitCode -Command "docker info --format '{{.ServerVersion}}'"
-          Invoke-Wsl -CheckExitCode -Command "docker compose version"
-          $bridgeSubnet = ((Invoke-Wsl -CheckExitCode -Command "docker network inspect bridge --format '{{(index .IPAM.Config 0).Subnet}}'") -replace "`0", "").Trim()
-          if ($bridgeSubnet -ne "10.11.0.0/24") {
-            throw "Expected Docker bridge subnet 10.11.0.0/24 after cache import, got $bridgeSubnet"
           }

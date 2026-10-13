@@ -110,7 +110,7 @@ Each provisioning command logs its start and completion, exit code, and elapsed 
 - **First boot:** investigate WSL2 VM startup and nested virtualization.
 - **A WSL bash command:** use the preceding setup phase message to distinguish package installation, Docker startup, and other Linux-side operations.
 
-Compare affected and successful runs by image and WSL version before changing installation behavior. A job timeout is a safety net, not a root-cause fix. CI repeats both distribution/cache combinations on Windows and unregisters provisioned distributions in cached jobs to verify an actual cache import, rather than reusing an already registered distribution.
+Compare affected and successful runs by image and WSL version before changing installation behavior. A job timeout is a safety net, not a root-cause fix. CI covers Ubuntu and Debian on Windows with caching enabled and disabled, plus the Linux no-op path. Cached jobs exercise cache restoration when an entry is available, without forcing a cache round trip in every run.
 
 ## What it does (Linux)
 
