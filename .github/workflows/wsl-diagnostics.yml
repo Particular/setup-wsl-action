@@ -1,6 +1,8 @@
 name: WSL installation diagnostics
 on:
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   compare:
     name: Ubuntu-${{ matrix.provisioning }}-build-${{ matrix.build }}
