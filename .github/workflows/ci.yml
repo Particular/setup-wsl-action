@@ -95,3 +95,41 @@ jobs:
               throw "Docker is not available on the runner"
             }
           }
+
+          # Dogfood: Invoke-DockerCompose on both OSes. `config` only renders the file, so no image is pulled.
+          # The directory name contains a space on purpose.
+          $composeDirectory = Join-Path $Env:RUNNER_TEMP "wsl tools compose check"
+          New-Item -ItemType Directory -Path $composeDirectory -Force | Out-Null
+          $composeFilePath = Join-Path $composeDirectory "compose.yml"
+          Set-Content -Path $composeFilePath -Value @'
+          name: wsltools-check
+          services:
+            probe:
+              image: busybox
+              environment:
+                PROBE_VALUE: "${PROBE_VALUE:?PROBE_VALUE is required}"
+          '@
+
+          Write-Host "Verifying Invoke-DockerCompose -CheckExitCode throws when Compose fails (PROBE_VALUE not set)..."
+          $composeError = $null
+          try {
+            Invoke-DockerCompose -CheckExitCode -ComposeFilePath $composeFilePath -Arguments "config"
+          }
+          catch {
+            $composeError = $_.Exception.Message
+          }
+          if ($composeError -notmatch "failed with exit code") {
+            throw "Expected Invoke-DockerCompose -CheckExitCode to throw on a failing command, got: $composeError"
+          }
+
+          Write-Host "Verifying Invoke-DockerCompose passes -Environment through to Compose..."
+          $probeValue = 'it''s a "quoted" $HOME `value` \\ end'
+          $composeConfig = Invoke-DockerCompose -CheckExitCode -ComposeFilePath $composeFilePath -Arguments "config", "--format", "json" -Environment @{ PROBE_VALUE = $probeValue }
+          # `config` escapes `$` as `$$` in its output.
+          $renderedValue = ($composeConfig | ConvertFrom-Json).services.probe.environment.PROBE_VALUE -replace '\$\$', '$'
+          if ($renderedValue -cne $probeValue) {
+            throw "Expected PROBE_VALUE '$probeValue' in the compose config, got '$renderedValue'"
+          }
+          if (Test-Path Env:PROBE_VALUE) {
+            throw "Invoke-DockerCompose left PROBE_VALUE in the process environment"
+          }

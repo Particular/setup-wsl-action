@@ -29,9 +29,9 @@ The action sets three environment variables for subsequent steps:
 |---|---|---|
 | `WSL_DISTRIBUTION` | The distribution name (e.g. `Ubuntu`) | Empty string |
 | `WSL_IP` | The WSL VM gateway IPv4 address | `127.0.0.1` |
-| `WSL_TOOLS_MODULE_PATH` | Path to the shipped `WslTools` module (`Invoke-Wsl`) | Same path (importable; `Invoke-Wsl` is Windows-only) |
+| `WSL_TOOLS_MODULE_PATH` | Path to the shipped `WslTools` module (`Invoke-Wsl`, `Invoke-DockerCompose`) | Same path (`Invoke-DockerCompose` works here too; `Invoke-Wsl` is Windows-only) |
 
-Service actions can read these env vars to run Docker commands through WSL and construct connection strings with the correct host, without doing their own WSL provisioning. `WSL_TOOLS_MODULE_PATH` lets a consuming action `Import-Module` the shipped `Invoke-Wsl` helper instead of copying it into its own repo. If the env vars are not set (e.g. the action wasn't called), service actions can fall back to provisioning WSL themselves. That keeps existing actions backwards-compatible.
+Service actions can read these env vars to run Docker commands through WSL and construct connection strings with the correct host, without doing their own WSL provisioning. `WSL_TOOLS_MODULE_PATH` lets a consuming action `Import-Module` the shipped `Invoke-Wsl` and `Invoke-DockerCompose` helpers instead of copying them into its own repo. If the env vars are not set (e.g. the action wasn't called), service actions can fall back to provisioning WSL themselves. That keeps existing actions backwards-compatible.
 
 ## Inputs
 
@@ -54,7 +54,7 @@ The following environment variables can also override the inputs, for consistenc
 |---|---|
 | `wsl-ip` | The WSL VM gateway IPv4 address. On Linux runners this is `127.0.0.1`. |
 | `distribution` | The WSL distribution name that was provisioned. Empty on Linux runners. |
-| `wsl-tools-module-path` | Filesystem path to the shipped `WslTools` module (`Invoke-Wsl`), for consuming actions to `Import-Module`. Set on both Windows and Linux runners. |
+| `wsl-tools-module-path` | Filesystem path to the shipped `WslTools` module (`Invoke-Wsl`, `Invoke-DockerCompose`), for consuming actions to `Import-Module`. Set on both Windows and Linux runners. |
 | `cache-hit` | `'true'` if the WSL distribution was restored from cache, `'false'` otherwise (including on Linux runners). |
 
 ## Exported module (`Invoke-Wsl`)
@@ -77,6 +77,22 @@ Invoke-Wsl -CheckExitCode -Command "docker run --name myservice --detach --publi
 `Invoke-Wsl` wraps `wsl.exe`, so it is Windows-only. On Linux runners, Docker is native and consuming actions run it directly. The module path is still exported so the `Import-Module` line is identical on both OSes.
 
 The module also exports `ConvertTo-WslPath`, which turns a Windows path (e.g. `D:\a\foo\bar.sh`) into the equivalent path inside the WSL distribution (e.g. `/mnt/d/a/foo/bar.sh`). This is useful when a consuming action needs to pass a host-side file, such as an init script, into WSL. It is also Windows-only.
+
+`Invoke-DockerCompose` runs `docker compose -f <file> <arguments>`. Unlike `Invoke-Wsl`, it works on both OSes: on Windows it runs inside the provisioned distribution, on Linux it calls the native Docker. Consuming actions can call it without branching on `RUNNER_OS`:
+
+```powershell
+Invoke-DockerCompose -CheckExitCode -ComposeFilePath (Join-Path $PSScriptRoot "compose.yml") -Arguments "up", "--detach" -Environment @{ SA_PASSWORD = $password }
+```
+
+| Parameter | Required | Description |
+|---|:-:|---|
+| `-ComposeFilePath` | Yes | Host path to the compose file. On Windows this must be an absolute Windows path. It is converted with `ConvertTo-WslPath`. |
+| `-Arguments` | Yes | Everything after `docker compose -f <file>`, one array element per argument (e.g. `"up", "--detach"`). |
+| `-Environment` | No | Hashtable of variables for Compose to interpolate (`${VAR}`). On Windows, variables set via `$Env:` do not reach Docker inside WSL, so pass them here. |
+| `-Distribution` | No | Defaults to `$WSL_DISTRIBUTION`. Ignored on Linux. |
+| `-CheckExitCode` | No | Throw on a non-zero exit code. Without it, check `$LASTEXITCODE`. |
+
+Arguments and environment values are passed to Compose as-is, so they may contain spaces, quotes or `$`. The output of `docker compose` is returned to the caller (e.g. `$id = Invoke-DockerCompose ... -Arguments "ps", "-q", "myservice"`). Compose resolves relative paths and `.env` against the compose file's directory, so there is no need to `cd` there first.
 
 ## What it does (Windows)
 

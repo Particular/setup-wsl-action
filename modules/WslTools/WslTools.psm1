@@ -39,4 +39,59 @@ function ConvertTo-WslPath {
     return "/mnt/$drive/$rest"
 }
 
-Export-ModuleMember -Function Invoke-Wsl, ConvertTo-WslPath
+function ConvertTo-BashSingleQuoted {
+    param(
+        [string]$Value
+    )
+
+    return "'" + $Value.Replace("'", "'\''") + "'"
+}
+
+function Invoke-DockerCompose {
+    param(
+        [Parameter(Mandatory = $true)][string]$ComposeFilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [System.Collections.IDictionary]$Environment = @{},
+        [string]$Distribution = $env:WSL_DISTRIBUTION,
+        [switch]$CheckExitCode
+    )
+
+    foreach ($name in $Environment.Keys) {
+        if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*\z') {
+            throw "Invoke-DockerCompose: '$name' is not a valid environment variable name."
+        }
+    }
+
+    if ($Env:RUNNER_OS -eq 'Windows') {
+        $words = @($Environment.Keys | Sort-Object | ForEach-Object { "$_=$(ConvertTo-BashSingleQuoted $Environment[$_])" })
+        $words += 'docker', 'compose', '-f', (ConvertTo-BashSingleQuoted (ConvertTo-WslPath $ComposeFilePath))
+        $words += $Arguments | ForEach-Object { ConvertTo-BashSingleQuoted $_ }
+
+        # wsl.exe runs everything after `--` through the default shell before bash -c sees it, so `$`,
+        # backticks and backslashes would be expanded despite the single quotes. Base64 survives that pass.
+        $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($words -join ' '))
+        Invoke-Wsl -Distribution $Distribution -Command "source <(echo $encodedCommand | base64 -d)"
+    }
+    else {
+        $previousValues = @{}
+        try {
+            foreach ($name in $Environment.Keys) {
+                $previousValues[$name] = [Environment]::GetEnvironmentVariable($name)
+                Set-Item -Path "Env:$name" -Value "$($Environment[$name])"
+            }
+            docker compose -f $ComposeFilePath @Arguments
+        }
+        finally {
+            foreach ($name in $previousValues.Keys) {
+                Set-Item -Path "Env:$name" -Value $previousValues[$name]
+            }
+        }
+    }
+
+    # Not delegated to Invoke-Wsl: its message would contain the encoded command, and with it the environment values.
+    if ($CheckExitCode -and $LASTEXITCODE -ne 0) {
+        throw "docker compose $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+    }
+}
+
+Export-ModuleMember -Function Invoke-Wsl, ConvertTo-WslPath, Invoke-DockerCompose
