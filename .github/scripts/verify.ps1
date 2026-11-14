@@ -159,6 +159,22 @@ function Test-ComposeEnvironmentDoesNotLeak {
     }
 }
 
+# --- ConvertTo-WslPath checks ------------------------------------------------
+
+function Test-ConvertToWslPath {
+    Write-Host "Verifying ConvertTo-WslPath..."
+
+    $cases = @(
+        @{ Windows = 'D:\a\foo\bar.sh'; Wsl = '/mnt/d/a/foo/bar.sh' }
+        @{ Windows = '\\?\D:\a\foo\bar.sh'; Wsl = '/mnt/d/a/foo/bar.sh' }
+        @{ Windows = 'C:\'; Wsl = '/mnt/c/' }
+    )
+
+    foreach ($case in $cases) {
+        Assert-Equal "ConvertTo-WslPath '$($case.Windows)'" -Expected $case.Wsl -Actual (ConvertTo-WslPath $case.Windows) -CaseSensitive
+    }
+}
+
 # --- Run ---------------------------------------------------------------------
 
 Show-ActionOutputsAndEnvironment
@@ -174,6 +190,8 @@ if ($Env:RUNNER_OS -eq "Windows") {
 else {
     Test-DockerIsAvailableOnLinuxRunner
 }
+
+Test-ConvertToWslPath
 
 # Dogfood: Invoke-DockerCompose on both OSes.
 $composeFilePath = New-ComposeProbeFile

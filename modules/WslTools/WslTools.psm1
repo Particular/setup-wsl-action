@@ -28,14 +28,16 @@ function ConvertTo-WslPath {
         [Parameter(Mandatory = $true)][string]$WindowsPath
     )
 
-    if ($WindowsPath -notmatch '^[A-Za-z]:') {
+    # Strip the extended-length \\?\ prefix first so it doesn't hide the drive letter from the check.
+    $trimmed = $WindowsPath -replace '^\\\\\?\\', ''
+
+    if ($trimmed -notmatch '^[A-Za-z]:') {
         throw "ConvertTo-WslPath expects a Windows-style absolute path with a drive letter, got: $WindowsPath"
     }
 
-    # Strip the extended-length \\?\ prefix and the drive letter, normalise separators.
-    $trimmed = $WindowsPath -replace '^\\\\\?\\', ''
+    # Drop the drive letter and normalise separators.
     $drive = $trimmed.Substring(0, 1).ToLowerInvariant()
-    $rest = $trimmed.Substring(2) -replace '\\', '/'
+    $rest = ($trimmed.Substring(2) -replace '\\', '/').TrimStart('/')
     return "/mnt/$drive/$rest"
 }
 
