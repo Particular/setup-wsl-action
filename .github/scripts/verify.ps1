@@ -159,6 +159,16 @@ function Test-ComposeEnvironmentDoesNotLeak {
     }
 }
 
+# --- Invoke-Wsl checks -------------------------------------------------------
+
+function Test-InvokeWslPassesCommandVerbatim {
+    Write-Host "Verifying Invoke-Wsl passes shell metacharacters through to bash unchanged..."
+
+    $expected = 'a$b`c\d'
+    $actual = Get-WslOutput "printf '%s' '$expected'"
+    Assert-Equal "Invoke-Wsl output" -Expected $expected -Actual $actual -CaseSensitive
+}
+
 # --- ConvertTo-WslPath checks ------------------------------------------------
 
 function Test-ConvertToWslPath {
@@ -186,6 +196,7 @@ Import-Module $Env:WSL_TOOLS_MODULE_PATH
 if ($Env:RUNNER_OS -eq "Windows") {
     Test-DockerIsRunningInWsl
     Test-DockerBridgeSubnetIsPinned
+    Test-InvokeWslPassesCommandVerbatim
 }
 else {
     Test-DockerIsAvailableOnLinuxRunner

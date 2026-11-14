@@ -70,7 +70,7 @@ Invoke-Wsl -CheckExitCode -Command "docker run --name myservice --detach --publi
 
 | Parameter | Required | Description |
 |---|:-:|---|
-| `-Command` | Yes | The bash command to run inside the distribution. |
+| `-Command` | Yes | The bash command to run inside the distribution. It reaches bash verbatim, so `$`, backticks and backslashes are not expanded by an intermediate shell. |
 | `-Distribution` | No | Defaults to `$WSL_DISTRIBUTION` (set by this action), so it can usually be omitted. |
 | `-CheckExitCode` | No | Throw on a non-zero exit code. |
 

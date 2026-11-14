@@ -11,7 +11,10 @@ function Invoke-Wsl {
         throw "Invoke-Wsl: -Distribution was not provided and WSL_DISTRIBUTION is not set. Run setup-wsl-action first or pass -Distribution explicitly."
     }
 
-    wsl.exe --distribution $Distribution --user root -- bash -c $Command
+    # wsl.exe hands everything after `--` to the default shell before bash -c sees it, which would expand
+    # `$`, backticks and backslashes. Base64 survives that pass, so the command reaches bash verbatim.
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Command))
+    wsl.exe --distribution $Distribution --user root -- bash -c "source <(echo $encodedCommand | base64 -d)"
 
     if ($CheckExitCode -and $LASTEXITCODE -ne 0) {
         throw "WSL command failed with exit code $LASTEXITCODE`: $Command"
@@ -69,10 +72,7 @@ function Invoke-DockerCompose {
         $words += 'docker', 'compose', '-f', (ConvertTo-BashSingleQuoted (ConvertTo-WslPath $ComposeFilePath))
         $words += $Arguments | ForEach-Object { ConvertTo-BashSingleQuoted $_ }
 
-        # wsl.exe runs everything after `--` through the default shell before bash -c sees it, so `$`,
-        # backticks and backslashes would be expanded despite the single quotes. Base64 survives that pass.
-        $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($words -join ' '))
-        Invoke-Wsl -Distribution $Distribution -Command "source <(echo $encodedCommand | base64 -d)"
+        Invoke-Wsl -Distribution $Distribution -Command ($words -join ' ')
     }
     else {
         $previousValues = @{}
