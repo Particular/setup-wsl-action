@@ -11,7 +11,10 @@ function Invoke-Wsl {
         throw "Invoke-Wsl: -Distribution was not provided and WSL_DISTRIBUTION is not set. Run setup-wsl-action first or pass -Distribution explicitly."
     }
 
-    wsl.exe --distribution $Distribution --user root -- bash -c $Command
+    # wsl.exe hands everything after `--` to the default shell before bash -c sees it, which would expand
+    # `$`, backticks and backslashes. Base64 survives that pass, so the command reaches bash verbatim.
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Command))
+    wsl.exe --distribution $Distribution --user root -- bash -c "source <(echo $encodedCommand | base64 -d)"
 
     if ($CheckExitCode -and $LASTEXITCODE -ne 0) {
         throw "WSL command failed with exit code $LASTEXITCODE`: $Command"
@@ -28,15 +31,69 @@ function ConvertTo-WslPath {
         [Parameter(Mandatory = $true)][string]$WindowsPath
     )
 
-    if ($WindowsPath -notmatch '^[A-Za-z]:') {
+    # Strip the extended-length \\?\ prefix first so it doesn't hide the drive letter from the check.
+    $trimmed = $WindowsPath -replace '^\\\\\?\\', ''
+
+    if ($trimmed -notmatch '^[A-Za-z]:') {
         throw "ConvertTo-WslPath expects a Windows-style absolute path with a drive letter, got: $WindowsPath"
     }
 
-    # Strip the extended-length \\?\ prefix and the drive letter, normalise separators.
-    $trimmed = $WindowsPath -replace '^\\\\\?\\', ''
+    # Drop the drive letter and normalise separators.
     $drive = $trimmed.Substring(0, 1).ToLowerInvariant()
-    $rest = $trimmed.Substring(2) -replace '\\', '/'
+    $rest = ($trimmed.Substring(2) -replace '\\', '/').TrimStart('/')
     return "/mnt/$drive/$rest"
 }
 
-Export-ModuleMember -Function Invoke-Wsl, ConvertTo-WslPath
+function ConvertTo-BashSingleQuoted {
+    param(
+        [string]$Value
+    )
+
+    return "'" + $Value.Replace("'", "'\''") + "'"
+}
+
+function Invoke-DockerCompose {
+    param(
+        [Parameter(Mandatory = $true)][string]$ComposeFilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [System.Collections.IDictionary]$Environment = @{},
+        [string]$Distribution = $env:WSL_DISTRIBUTION,
+        [switch]$CheckExitCode
+    )
+
+    foreach ($name in $Environment.Keys) {
+        if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*\z') {
+            throw "Invoke-DockerCompose: '$name' is not a valid environment variable name."
+        }
+    }
+
+    if ($Env:RUNNER_OS -eq 'Windows') {
+        $words = @($Environment.Keys | Sort-Object | ForEach-Object { "$_=$(ConvertTo-BashSingleQuoted $Environment[$_])" })
+        $words += 'docker', 'compose', '-f', (ConvertTo-BashSingleQuoted (ConvertTo-WslPath $ComposeFilePath))
+        $words += $Arguments | ForEach-Object { ConvertTo-BashSingleQuoted $_ }
+
+        Invoke-Wsl -Distribution $Distribution -Command ($words -join ' ')
+    }
+    else {
+        $previousValues = @{}
+        try {
+            foreach ($name in $Environment.Keys) {
+                $previousValues[$name] = [Environment]::GetEnvironmentVariable($name)
+                Set-Item -Path "Env:$name" -Value "$($Environment[$name])"
+            }
+            docker compose -f $ComposeFilePath @Arguments
+        }
+        finally {
+            foreach ($name in $previousValues.Keys) {
+                Set-Item -Path "Env:$name" -Value $previousValues[$name]
+            }
+        }
+    }
+
+    # Not delegated to Invoke-Wsl: its message would contain the encoded command, and with it the environment values.
+    if ($CheckExitCode -and $LASTEXITCODE -ne 0) {
+        throw "docker compose $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+    }
+}
+
+Export-ModuleMember -Function Invoke-Wsl, ConvertTo-WslPath, Invoke-DockerCompose
